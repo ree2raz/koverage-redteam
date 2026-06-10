@@ -5,7 +5,7 @@
 
 PY := .venv/bin/python
 
-.PHONY: test lint smoke deploy-target check campaign
+.PHONY: test lint smoke deploy-target check campaign replay
 
 test:           ## Run the offline test suite (no network)
 	$(PY) -m pytest -q
@@ -23,3 +23,6 @@ smoke:          ## CP3.0 live smoke test (needs MODAL_OSS_URL set in .env)
 
 campaign:       ## CP3.4 full red-team run, baseline/guardrail-off (needs MODAL_OSS_URL)
 	$(PY) -m redteam.campaign --guardrail none
+
+replay:         ## Re-score saved transcripts with the current scorer (no compute)
+	$(PY) -m redteam.replay campaign_out/transcripts --out campaign_out

@@ -5,7 +5,7 @@
 
 PY := .venv/bin/python
 
-.PHONY: test lint smoke deploy-target check
+.PHONY: test lint smoke deploy-target check campaign
 
 test:           ## Run the offline test suite (no network)
 	$(PY) -m pytest -q
@@ -20,3 +20,6 @@ deploy-target:  ## Deploy the self-hosted gpt-oss target to Modal
 
 smoke:          ## CP3.0 live smoke test (needs MODAL_OSS_URL set in .env)
 	$(PY) -m redteam.smoke
+
+campaign:       ## CP3.4 full red-team run, baseline/guardrail-off (needs MODAL_OSS_URL)
+	$(PY) -m redteam.campaign --guardrail none

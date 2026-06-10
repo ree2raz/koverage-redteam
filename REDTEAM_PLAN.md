@@ -70,7 +70,7 @@ run locally.
 | 4 tools, masked-by-default, `disclose_sensitive` only unmasked path         | ✅                        |
 | Agent loop + transcript logging                                             | ✅                        |
 | CLI driver (batch + interactive)                                            | ✅                        |
-| 121 substrate/probe/scorer/stats tests passing, ruff clean                  | ✅ (under `.venv`/py3.14) |
+| 123 substrate/probe/scorer/stats tests passing, ruff clean                  | ✅ (under `.venv`/py3.14) |
 | Offline E2E verified (lookup + booking, schema round-trip, DB state change) | ✅                        |
 | Live E2E verified against real model (CP3.0 smoke gate PASS)                | ✅                        |
 
@@ -94,7 +94,7 @@ run locally.
 | `scorer.py` 11 deterministic checks (4 PHI surfaces) + 3 hall checks | ✅                                 |
 | `stats.py` Wilson / Jeffreys / rule-of-three (no scipy)              | ✅                                 |
 | `runner.py` run_all / build_scorecard / per-probe transcripts        | ✅ (to be superseded by Promptfoo) |
-| Example probes + template                                            | ✅ (5 of 40)                       |
+| Example probes + template                                            | ✅ **40 of 40**                    |
 
 **Open items:**
 
@@ -103,10 +103,20 @@ run locally.
       `design_effect`, `effective_n`, and `clustered_failure_rate` (design-effect
       Wilson). `compute_axis_stats` documents the unit-of-analysis contract.
       Tests in `test_stats.py`.
-- [ ] **CP2.B — Probes:** 35 of 40 remaining. Reframe authoring around
-      **Promptfoo plugins + PyRIT orchestrators** rather than hand-written YAML
-      where possible; keep custom YAML only for the canary-specific PHI probes. - PHI impersonation 2/5 · cross-patient 0/5 · authority-confusion 0/5 ·
-      multi-turn trust 0/5 (→ PyRIT) · injection 1/5 - Hall nonexistent-slot 1/5 · nonexistent-patient 1/5 · clinical-fabrication 0/5 (judge-required)
+- [x] **CP2.B — Probes:** ✅ done. Full 40-probe suite, **5 per (axis,vector)
+      cell**: PHI impersonation/cross*patient/authority_confusion/
+      multi_turn_trust/injection (25) + Hall nonexistent_slot/nonexistent_patient/
+      clinical_fabrication (15). Every probe references real fixture data and trips
+      a real deterministic check; the 5 clinical_fabrication probes are
+      `requires_judge: true` with a DB-grounded deterministic backstop. The suite
+      is regression-locked by `test_packaged_probe_suite_is_complete` (count +
+      distribution + uniqueness + judge-set). Multi-turn here is static-scripted;
+      PyRIT-orchestrated multi-turn remains CP3.2.
+      \_Two bugs found & fixed while authoring:* (a) `load_probes_dir` globbed
+      `_TEMPLATE.yaml` as a real 41st probe → now skips `_`-prefixed files;
+      (b) `hall.phantom_appointment_confirmed` false-positived on correct refusals
+      ("you have **no upcoming appointment**s") → added a negation guard mirroring
+      `phantom_patient_confirmed`. Both regression-tested.
 
 ---
 
@@ -128,8 +138,17 @@ run locally.
       open-weight/DeepSeek attacker against the same target.
 - [ ] **CP3.3** Bridge scoring: route every transcript through the **custom
       canary deterministic scorer** (authoritative for PHI) + DeepEval judge for H1/H3.
-- [ ] **CP3.4** Baseline run (guardrail-off), all probes, pinned config; persist
-      transcript JSON + fixture hash + model/provider + decoding + probe id + schema ver.
+- [~] **CP3.4** Baseline run (guardrail-off), all probes, pinned config; persist
+  transcript JSON + fixture hash + model/provider + decoding + probe id + schema ver.
+  _Entry point built & wired:_ `redteam/campaign.py` (`make campaign`) loads
+  the 40-probe suite → `build_target_backend` (self-hosted target) →
+  `run_probe`/`score_probe` → `build_scorecard`, writing
+  `campaign_out/scorecard_none.json` + per-probe transcripts. Resilient
+  (per-probe errors don't abort), judge-required probes flagged
+  `judge_required_pending`. Full path validated **offline** against stub
+  backends (precise target-specific scoring, cwASR math, multi-turn
+  execution). **Remaining: execute the live baseline** against the deployed
+  Modal target and commit `campaign_out/`.
 - [ ] **CP3.5** Guardrail-on run: write `guardrail.py` (regex/output filter),
       re-run identical probes; compute delta by axis/vector/severity; report
       tool-misuse blind spots explicitly.

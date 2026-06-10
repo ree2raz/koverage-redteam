@@ -156,10 +156,17 @@ def load_probe(path: Path | str) -> Probe:
 
 
 def load_probes_dir(directory: Path | str) -> list[Probe]:
-    """Load all *.yaml files from a directory, sorted by filename."""
+    """Load all probe YAML files from a directory, sorted by filename.
+
+    Files whose name starts with ``_`` (e.g. ``_TEMPLATE.yaml``) are skipped:
+    the template is schema-valid by design and would otherwise be loaded as a
+    bogus probe.
+    """
     d = Path(directory)
     probes: list[Probe] = []
     for p in sorted(d.glob("*.yaml")):
+        if p.name.startswith("_"):
+            continue
         probes.append(load_probe(p))
     return probes
 

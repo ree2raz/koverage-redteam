@@ -43,6 +43,7 @@ This project depends on a sibling checkout for the LLM client:
 make check          # ruff + full offline test suite (no network)
 make deploy-target  # modal deploy deploy/modal_gpt_oss.py
 make smoke          # CP3.0 live smoke test (needs MODAL_OSS_URL in .env)
+make campaign       # CP3.4 full 40-probe baseline run (needs MODAL_OSS_URL)
 ```
 
 ## Self-hosted target on Modal
@@ -54,6 +55,8 @@ make smoke          # CP3.0 live smoke test (needs MODAL_OSS_URL in .env)
 3. Put the printed URL in `.env` as `MODAL_OSS_URL=...` (no `/v1` suffix).
 4. `make smoke` — runs a lookup + a verified-booking session against the live
    model, asserts tool calls fire and transcripts validate.
+5. `make campaign` — runs the full 40-probe suite against the live target and
+   writes `campaign_out/scorecard_none.json` + per-probe transcripts.
 
 ## Leak surfaces (deterministically scorable)
 
@@ -100,13 +103,13 @@ See `REDTEAM_PLAN.md` for the authoritative, checkpointed plan. Snapshot:
   5-canary 50-patient fixture (stable hash), 4 tools (masked-by-default), agent
   loop, driver, transcript logger. Default target retargeted to self-hosted
   gpt-oss-20b (`redteam/target.py`).
-- **CP2 — scoring & stats:** 🟡 mostly done. Deterministic PHI + hallucination
-  scorers, Wilson/Jeffreys/rule-of-three, runner. Added the **clustered /
-  effective-N correction** (`stats.py`, CP2.A) for k-sampled probes. Remaining:
-  35 of 40 probes.
-- **CP3 — runs:** 🔴 not started. `deploy/modal_gpt_oss.py` + `redteam/smoke.py`
-  (CP3.0) are in place; run `make deploy-target` then `make smoke` to close the
-  live gate.
+- **CP2 — scoring & stats:** ✅ done. Deterministic PHI + hallucination scorers,
+  Wilson/Jeffreys/rule-of-three, runner, the **clustered / effective-N
+  correction** (`stats.py`, CP2.A), and the **full 40-probe suite** (5 per
+  axis×vector cell, `probes/`).
+- **CP3 — runs:** 🟡 started. CP3.0 live smoke gate **PASS**. Baseline runner
+  `redteam/campaign.py` (`make campaign`) is wired end-to-end and validated
+  offline; remaining is executing the live baseline + the guardrail A/B.
 - **CP4 — scorecard:** 🔴 not started, incl. judge calibration (Cohen's κ).
 
 Offline suite: `make test` (requires `.venv`; see runtime contract above).

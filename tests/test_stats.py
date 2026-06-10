@@ -4,10 +4,15 @@ from __future__ import annotations
 
 
 from redteam.stats import (
+    aggregate_probe_outcome,
+    clustered_failure_rate,
+    compute_axis_stats,
+    design_effect,
+    effective_n,
+    estimate_icc,
     jeffreys_interval,
     rule_of_three,
     wilson_interval,
-    compute_axis_stats,
 )
 from redteam.severity import COST_WEIGHTS
 
@@ -197,6 +202,83 @@ def test_axis_stats_filters_by_axis():
     phi_stats = compute_axis_stats("phi", phi_scores + hall_scores, COST_WEIGHTS)
     assert phi_stats.n_probes == 10
     assert phi_stats.n_failed == 3
+
+
+# ---------------------------------------------------------------------------
+# CP2.A — clustered / effective-N correction
+# ---------------------------------------------------------------------------
+
+
+def test_aggregate_any_rule():
+    assert aggregate_probe_outcome([False, False, True]) is True
+    assert aggregate_probe_outcome([False, False, False]) is False
+    assert aggregate_probe_outcome([]) is False
+
+
+def test_aggregate_majority_rule():
+    assert aggregate_probe_outcome([True, True, False], rule="majority") is True
+    assert aggregate_probe_outcome([True, False, False], rule="majority") is False
+
+
+def test_aggregate_unknown_rule_raises():
+    import pytest
+    with pytest.raises(ValueError):
+        aggregate_probe_outcome([True], rule="bogus")
+
+
+def test_icc_zero_when_no_clustering():
+    # Every probe behaves identically (same per-cluster rate) -> low/zero ICC.
+    sizes = [10] * 8
+    fails = [5] * 8  # identical 0.5 rate everywhere
+    icc = estimate_icc(fails, sizes)
+    assert 0.0 <= icc < 0.1
+
+
+def test_icc_high_when_strong_clustering():
+    # Clusters are all-or-nothing -> strong intracluster correlation.
+    sizes = [10] * 8
+    fails = [10, 0, 10, 0, 10, 0, 10, 0]
+    icc = estimate_icc(fails, sizes)
+    assert icc > 0.8
+
+
+def test_icc_single_cluster_is_zero():
+    assert estimate_icc([5], [10]) == 0.0
+
+
+def test_design_effect_and_effective_n():
+    sizes = [10] * 8  # 80 attempts, mean cluster size 10
+    # DEFF = 1 + (10-1)*icc ; with icc=0.5 -> 5.5
+    deff = design_effect(sizes, 0.5)
+    assert abs(deff - 5.5) < 1e-9
+    n_eff = effective_n(sizes, 0.5)
+    assert abs(n_eff - 80 / 5.5) < 1e-6
+    # No clustering -> effective n equals total.
+    assert abs(effective_n(sizes, 0.0) - 80) < 1e-9
+
+
+def test_clustered_interval_wider_than_naive():
+    # 80 attempts, strongly clustered. The clustered CI must be wider than the
+    # naive Wilson CI that pretends all 80 attempts are independent.
+    sizes = [10] * 8
+    fails = [10, 0, 10, 0, 10, 0, 10, 0]  # p_hat = 0.5
+    cr = clustered_failure_rate(fails, sizes)
+    assert abs(cr.p_hat - 0.5) < 1e-9
+    assert cr.n_eff < cr.n_attempts  # deflated
+    naive_lo, naive_hi = wilson_interval(40, 80)
+    clustered_width = cr.ci_upper - cr.ci_lower
+    naive_width = naive_hi - naive_lo
+    assert clustered_width > naive_width
+
+
+def test_clustered_rate_no_clustering_matches_naive():
+    # Identical per-cluster rates -> icc≈0 -> clustered CI ≈ naive Wilson.
+    sizes = [10] * 8
+    fails = [5] * 8  # p_hat = 0.5
+    cr = clustered_failure_rate(fails, sizes)
+    naive_lo, naive_hi = wilson_interval(40, 80)
+    assert abs(cr.ci_lower - naive_lo) < 0.03
+    assert abs(cr.ci_upper - naive_hi) < 0.03
 
 
 def test_axis_stats_cwASR_dominated_by_high_severity():

@@ -159,6 +159,167 @@ def rule_of_three(n: int) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Clustered / multi-sample correction (CP2.A)
+# ---------------------------------------------------------------------------
+#
+# Red-teaming generates k samples per probe (k=5..10) at temperature > 0. Those
+# k samples are NOT independent — they share a probe, a prompt, and a target
+# state — so counting "150 generations from 20 probes" as n=150 independent
+# trials understates the variance and produces falsely narrow Wilson/Jeffreys
+# intervals.
+#
+# Two honest ways to handle this, both provided here:
+#
+#   (1) Probe-level analysis (recommended primitive for ASR): collapse each
+#       probe's k samples to ONE outcome with `aggregate_probe_outcome` (default
+#       "any" — one leak is a leak), then the unit of analysis is the probe and
+#       compute_axis_stats / Wilson / Jeffreys apply unchanged on n_probes.
+#
+#   (2) Attempt-level analysis with a clustered correction: if you want the
+#       per-attempt failure rate, use `clustered_failure_rate`, which estimates
+#       the intracluster correlation, deflates n by the design effect, and widens
+#       the interval accordingly.
+
+
+def aggregate_probe_outcome(sample_failures: list[bool], rule: str = "any") -> bool:
+    """Collapse a probe's per-sample failures into one probe-level outcome.
+
+    rule="any"      -> probe fails if ANY sample failed (security worst-case).
+    rule="majority" -> probe fails if > half of samples failed.
+
+    Empty input returns False (a probe with no samples did not fail).
+    """
+    if not sample_failures:
+        return False
+    if rule == "any":
+        return any(sample_failures)
+    if rule == "majority":
+        return sum(sample_failures) * 2 > len(sample_failures)
+    raise ValueError(f"unknown aggregation rule {rule!r}; use 'any' or 'majority'")
+
+
+def estimate_icc(cluster_fail_counts: list[int], cluster_sizes: list[int]) -> float:
+    """One-way-ANOVA moment estimate of the intracluster correlation for binary data.
+
+    cluster_fail_counts[i] = failures observed in probe i
+    cluster_sizes[i]       = samples drawn for probe i (k_i)
+
+    Returns ICC clamped to [0, 1]. With <2 clusters or no within-cluster
+    variation to estimate, returns 0.0 (no detectable clustering).
+    """
+    if len(cluster_fail_counts) != len(cluster_sizes):
+        raise ValueError("cluster_fail_counts and cluster_sizes must align")
+    sizes = [m for m in cluster_sizes if m > 0]
+    fails = [y for y, m in zip(cluster_fail_counts, cluster_sizes) if m > 0]
+    g = len(sizes)
+    if g < 2:
+        return 0.0
+    total_n = sum(sizes)
+    if total_n <= g:  # every cluster has size 1 -> no within-cluster info
+        return 0.0
+    p_hat = sum(fails) / total_n
+    p_i = [y / m for y, m in zip(fails, sizes)]
+    ss_between = sum(m * (pi - p_hat) ** 2 for m, pi in zip(sizes, p_i))
+    ss_within = sum(m * pi * (1.0 - pi) for m, pi in zip(sizes, p_i))
+    ms_between = ss_between / (g - 1)
+    ms_within = ss_within / (total_n - g)
+    # Design-average cluster size (handles unequal k_i).
+    m0 = (total_n - sum(m * m for m in sizes) / total_n) / (g - 1)
+    denom = ms_between + (m0 - 1.0) * ms_within
+    if denom <= 0.0:
+        return 0.0
+    icc = (ms_between - ms_within) / denom
+    return max(0.0, min(1.0, icc))
+
+
+def design_effect(cluster_sizes: list[int], icc: float) -> float:
+    """Kish design effect DEFF = 1 + (m_bar - 1) * ICC, m_bar = mean cluster size.
+
+    DEFF >= 1; equals 1 when icc=0 or every cluster has size 1.
+    """
+    sizes = [m for m in cluster_sizes if m > 0]
+    if not sizes:
+        return 1.0
+    m_bar = sum(sizes) / len(sizes)
+    return max(1.0, 1.0 + (m_bar - 1.0) * icc)
+
+
+def effective_n(cluster_sizes: list[int], icc: float) -> float:
+    """Effective independent sample size = total samples / design effect."""
+    total = sum(m for m in cluster_sizes if m > 0)
+    return total / design_effect(cluster_sizes, icc)
+
+
+def _wilson_from_phat(p_hat: float, n: float, confidence: float) -> tuple[float, float]:
+    """Wilson score interval from a proportion and a (possibly fractional) n."""
+    if n <= 0:
+        return 0.0, 1.0
+    z = _norm_ppf(1.0 - (1.0 - confidence) / 2.0)
+    z2 = z * z
+    center = (p_hat + z2 / (2 * n)) / (1 + z2 / n)
+    margin = (z / (1 + z2 / n)) * math.sqrt(
+        p_hat * (1.0 - p_hat) / n + z2 / (4 * n * n)
+    )
+    return max(0.0, center - margin), min(1.0, center + margin)
+
+
+@dataclass
+class ClusteredRate:
+    """Attempt-level failure rate with a clustering correction."""
+
+    n_attempts: int       # total samples across all probes
+    n_clusters: int       # number of probes
+    n_failed: int         # total failing samples
+    p_hat: float          # n_failed / n_attempts
+    icc: float            # estimated intracluster correlation
+    design_effect: float  # DEFF
+    n_eff: float          # effective independent sample size
+    ci_lower: float
+    ci_upper: float
+    ci_method: str        # "wilson_clustered"
+
+    def __str__(self) -> str:
+        return (
+            f"attempts={self.n_attempts} probes={self.n_clusters} "
+            f"failed={self.n_failed} p={self.p_hat:.3f} "
+            f"icc={self.icc:.3f} DEFF={self.design_effect:.2f} "
+            f"n_eff={self.n_eff:.1f} "
+            f"95%CI=[{self.ci_lower:.3f}, {self.ci_upper:.3f}] (clustered)"
+        )
+
+
+def clustered_failure_rate(
+    cluster_fail_counts: list[int],
+    cluster_sizes: list[int],
+    confidence: float = 0.95,
+) -> ClusteredRate:
+    """Per-attempt failure rate with a design-effect-corrected Wilson interval.
+
+    Use this only when reporting attempt-level rates from k-sampled probes; for
+    ASR prefer probe-level aggregation (see `aggregate_probe_outcome`).
+    """
+    icc = estimate_icc(cluster_fail_counts, cluster_sizes)
+    deff = design_effect(cluster_sizes, icc)
+    n_eff = effective_n(cluster_sizes, icc)
+    n_attempts = sum(m for m in cluster_sizes if m > 0)
+    n_failed = sum(y for y, m in zip(cluster_fail_counts, cluster_sizes) if m > 0)
+    p_hat = n_failed / n_attempts if n_attempts else 0.0
+    lo, hi = _wilson_from_phat(p_hat, n_eff, confidence)
+    return ClusteredRate(
+        n_attempts=n_attempts,
+        n_clusters=len([m for m in cluster_sizes if m > 0]),
+        n_failed=n_failed,
+        p_hat=p_hat,
+        icc=icc,
+        design_effect=deff,
+        n_eff=n_eff,
+        ci_lower=lo,
+        ci_upper=hi,
+        ci_method="wilson_clustered",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Normal quantile (for Wilson)
 # ---------------------------------------------------------------------------
 
@@ -239,7 +400,15 @@ def compute_axis_stats(
     cost_weights: dict[str, float],
     confidence: float = 0.95,
 ) -> AxisStats:
-    """Compute AxisStats for one axis from a list of ProbeScore objects."""
+    """Compute AxisStats for one axis from a list of ProbeScore objects.
+
+    UNIT OF ANALYSIS CONTRACT (CP2.A): each element of `probe_scores` must be ONE
+    probe — the independent unit. If a probe was run with k>1 samples, collapse
+    those samples to a single outcome first (see `aggregate_probe_outcome`).
+    Passing one ProbeScore per generation would treat correlated samples as
+    independent and produce falsely narrow Wilson/Jeffreys intervals. For
+    attempt-level rates instead, use `clustered_failure_rate`.
+    """
 
     axis_scores = [s for s in probe_scores if s.axis == axis]
     n = len(axis_scores)

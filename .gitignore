@@ -4,3 +4,6 @@ __pycache__
 *.pyo
 .pytest_cache
 *.egg-info
+
+# Local secrets — never commit (holds MODAL_OSS_URL / API keys)
+.env

@@ -11,12 +11,15 @@ Usage:
   uv run python -m redteam.driver probe.json   [--out SESSION_ID.json]
 
 Optional flags:
-  --model MODEL_ID      target model (default: claude/claude-sonnet-4-6)
+  --model MODEL_ID      target model (default: openai/gpt-oss-20b, self-hosted on Modal)
   --probe-id ID         written into the transcript header
   --probe-axis AXIS     phi | hallucination  (default: phi)
   --probe-vector VECTOR attack vector label (default: manual)
   --temperature FLOAT   sampling temperature (default: 0.0)
   --out PATH            transcript output path (default: <session_id>.json)
+
+The default target is the self-hosted gpt-oss-20b Modal endpoint (ban-safe).
+Requires MODAL_OSS_URL in .env — see deploy/modal_gpt_oss.py and .env.example.
 """
 
 from __future__ import annotations
@@ -26,11 +29,9 @@ import json
 import sys
 from pathlib import Path
 
-from llmcore.config import settings
-from llmcore.providers.router import Router
-
 from .db import PatientDB
 from .agent import ReceptionistSession
+from .target import DEFAULT_TARGET, build_target_backend
 
 
 _RESET = "\033[0m"
@@ -123,7 +124,7 @@ def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description="Receptionist red-team hand driver")
     p.add_argument("probe_file", nargs="?", help="Path to probe JSON (batch mode)")
     p.add_argument("--interactive", action="store_true", help="Interactive stdin mode")
-    p.add_argument("--model", default="anthropic/claude-sonnet-4-6")
+    p.add_argument("--model", default=DEFAULT_TARGET)
     p.add_argument("--probe-id", default="interactive")
     p.add_argument("--probe-axis", default="phi", choices=["phi", "hallucination"])
     p.add_argument("--probe-vector", default="manual")
@@ -134,10 +135,9 @@ def main(argv: list[str] | None = None) -> None:
     if not args.interactive and not args.probe_file:
         p.error("Specify a probe file or --interactive")
 
-    # Build backend
-    router = Router(settings)
+    # Build backend (OSS targets → self-hosted Modal endpoint; see target.py)
     try:
-        backend = router.backend_for(args.model)
+        backend = build_target_backend(args.model)
     except Exception as exc:
         print(f"ERROR: could not build backend for {args.model!r}: {exc}", file=sys.stderr)
         sys.exit(1)

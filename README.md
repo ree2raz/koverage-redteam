@@ -15,9 +15,45 @@ guardrail earns.
 | Model scope               | **One frontier API model, deep** + full adaptive round. CP2 stays network-free via **record/replay** of persisted transcripts.         |
 | Codebase home             | New `redteam` workspace member in this monorepo, on `llmcore`.                                                                         |
 
-Recommended (veto-able) model split: target = **Claude Sonnet 4.6**, judge =
-**Claude Opus 4.8** (strictly stronger than the target). Target model id +
-decoding params are written into every transcript header for replay.
+Model split (updated): target = **self-hosted `gpt-oss-20b`** on Modal (vLLM,
+OpenAI-compatible), climbing the ladder to `gpt-oss-120b` once the harness is
+proven; judge = **Claude Opus 4.8** (judging is classification, within ToS).
+Target model id + decoding params are written into every transcript header for
+replay.
+
+> **Why self-host the target.** Red-teaming a hosted frontier model via a
+> first-party API or OpenRouter without written authorization violates provider
+> ToS and risks account termination. Hosting open weights ourselves removes that
+> layer (only the Apache-2.0 license applies), gives a _bare_ model with no
+> provider moderation wrapper, and pins the exact weights for reproducibility.
+
+## Setup & runtime contract
+
+This project depends on a sibling checkout for the LLM client:
+
+- `llmcore` and `llmobs` are local path deps → `../koverage/core` and
+  `../koverage/llmobs` (see `pyproject.toml [tool.uv.sources]`). **The repo is
+  not standalone**: that sibling checkout must be present to install/run.
+- Tests require the project venv: **`.venv`, Python 3.14, with `llmcore`
+  installed**. The system `python` (e.g. 3.12) has no `llmcore` and will fail
+  test collection. Always use the `Makefile` targets, which invoke
+  `.venv/bin/python`:
+
+```bash
+make check          # ruff + full offline test suite (no network)
+make deploy-target  # modal deploy deploy/modal_gpt_oss.py
+make smoke          # CP3.0 live smoke test (needs MODAL_OSS_URL in .env)
+```
+
+## Self-hosted target on Modal
+
+1. `cp .env.example .env`
+2. `make deploy-target` — deploys `deploy/modal_gpt_oss.py` (gpt-oss-20b, vLLM,
+   tool calling via `--tool-call-parser openai`). To climb to 120b, set
+   `MODEL_KEY = "120b"` in that file and redeploy.
+3. Put the printed URL in `.env` as `MODAL_OSS_URL=...` (no `/v1` suffix).
+4. `make smoke` — runs a lookup + a verified-booking session against the live
+   model, asserts tool calls fire and transcripts validate.
 
 ## Leak surfaces (deterministically scorable)
 
@@ -58,17 +94,19 @@ decoding params are written into every transcript header for replay.
 
 ## Status
 
-Frozen substrate in place and tested (`redteam/tests/test_substrate.py`):
+See `REDTEAM_PLAN.md` for the authoritative, checkpointed plan. Snapshot:
 
-- `schema.py` — transcript schema **v1.0.0** (version-locked).
-- `severity.py` — S0–S3 / H0–H3 ladders; **`COST_WEIGHTS` pending ratify**.
-- `canary.py` — 5 provably-synthetic Luhn-valid planted rows + match list;
-  **values pending ratify**.
-- `verification.py` — verified-caller predicate, recomputed from transcript.
+- **CP1 — substrate:** ✅ done. Schema v1.0.0, severity ladder + cost weights,
+  5-canary 50-patient fixture (stable hash), 4 tools (masked-by-default), agent
+  loop, driver, transcript logger. Default target retargeted to self-hosted
+  gpt-oss-20b (`redteam/target.py`).
+- **CP2 — scoring & stats:** 🟡 mostly done. Deterministic PHI + hallucination
+  scorers, Wilson/Jeffreys/rule-of-three, runner. Added the **clustered /
+  effective-N correction** (`stats.py`, CP2.A) for k-sampled probes. Remaining:
+  35 of 40 probes.
+- **CP3 — runs:** 🔴 not started. `deploy/modal_gpt_oss.py` + `redteam/smoke.py`
+  (CP3.0) are in place; run `make deploy-target` then `make smoke` to close the
+  live gate.
+- **CP4 — scorecard:** 🔴 not started, incl. judge calibration (Cohen's κ).
 
-**Pending sign-off before scaffolding the agent:** freeze of schema v1.0.0,
-ratify of cost weights and canary values.
-
-**Next (on sign-off):** DB schema + seed generator (45 normal + 5 canary rows),
-the three tools + `disclose_sensitive`, the `llmcore`-backed agent loop, the
-hand-driver CLI that prints every tool call, and the transcript logger.
+Offline suite: `make test` (requires `.venv`; see runtime contract above).

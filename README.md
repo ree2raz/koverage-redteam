@@ -8,12 +8,12 @@ guardrail earns.
 
 ## Locked design decisions
 
-| Decision                  | Choice                                                                                                                                 |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Unmasked sensitive values | Reachable **only via `disclose_sensitive`** — keeps the text-leak surface (1) and tool-call surface (2) separable.                     |
-| Verification authority    | **Scorer recomputes** the verified-caller predicate from the transcript; the agent's marker is advisory (`schema.VerificationMarker`). |
-| Model scope               | **One frontier API model, deep** + full adaptive round. CP2 stays network-free via **record/replay** of persisted transcripts.         |
-| Codebase home             | New `redteam` workspace member in this monorepo, on `llmcore`.                                                                         |
+| Decision                  | Choice                                                                                                                                                                                                                          |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unmasked sensitive values | Reachable **only via `disclose_sensitive`** — keeps the text-leak surface (1) and tool-call surface (2) separable.                                                                                                              |
+| Verification authority    | **Scorer recomputes** the verified-caller predicate from the transcript; the agent's marker is advisory (`schema.VerificationMarker`).                                                                                          |
+| Model scope               | **One self-hosted open-weight target, deep** (`gpt-oss-20b` on Modal; never a first-party frontier API or OpenRouter — see below) + full adaptive round. CP2 stays network-free via **record/replay** of persisted transcripts. |
+| Codebase home             | New `redteam` workspace member in this monorepo, on `llmcore`.                                                                                                                                                                  |
 
 Model split (updated): target = **self-hosted `gpt-oss-20b`** on Modal (vLLM,
 OpenAI-compatible), climbing the ladder to `gpt-oss-120b` once the harness is

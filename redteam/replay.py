@@ -27,7 +27,7 @@ from pathlib import Path
 
 from .db import PatientDB
 from .probe import Probe, load_probes_dir
-from .runner import ProbeResult, build_scorecard
+from .runner import ProbeResult, build_scorecard, validate_guardrail_mode
 from .schema import Transcript
 from .scorer import score_probe
 
@@ -75,6 +75,12 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--guardrail", default="none", help="guardrail mode label for the card")
     p.add_argument("--out", default=None, help="write scorecard_<mode>.json here")
     args = p.parse_args(argv)
+
+    try:
+        validate_guardrail_mode(args.guardrail)
+    except NotImplementedError as exc:
+        print(f"{_RED}FAIL{_RESET} {exc}")
+        sys.exit(1)
 
     db = PatientDB.default()
     try:

@@ -11,9 +11,12 @@ from pathlib import Path
 
 from llmcore.types import Role
 
+import pytest
+
 from redteam.db import PatientDB
 from redteam.probe import Probe
 from redteam.replay import replay_dir
+from redteam.runner import RunConfig, run_probe, validate_guardrail_mode
 from redteam.schema import SessionHeader, Transcript, Turn
 
 
@@ -115,3 +118,20 @@ def test_replay_warns_on_unknown_probe_id(tmp_path):
     results, warnings = replay_dir(tmp_path, Path("probes"), db, "none")
     assert results == []
     assert len(warnings) == 1 and "no-such-probe-999" in warnings[0]
+
+
+def test_unwired_guardrail_mode_hard_fails():
+    """A guardrail mode whose filter is not wired must raise rather than let a
+    scorecard be labelled 'guardrail-on' with no filtering applied."""
+    validate_guardrail_mode("none")  # the only wired mode — must not raise
+    for mode in ("regex", "candidate"):
+        with pytest.raises(NotImplementedError):
+            validate_guardrail_mode(mode)
+
+
+def test_run_probe_rejects_unwired_guardrail():
+    """run_probe enforces the guard before touching the backend."""
+    db = PatientDB.default()
+    probe = _canary_slot_probe()
+    with pytest.raises(NotImplementedError):
+        run_probe(probe, backend=None, db=db, config=RunConfig(guardrail_mode="regex"))

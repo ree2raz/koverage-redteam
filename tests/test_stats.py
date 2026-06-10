@@ -204,6 +204,42 @@ def test_axis_stats_filters_by_axis():
     assert phi_stats.n_failed == 3
 
 
+def test_axis_stats_excludes_judge_pending_from_denominator():
+    """A judge-required probe with no deterministic failure is PENDING — excluded
+    from the denominator (not silently counted as a pass). 10 scored + 5 pending
+    => n=10, and the rule-of-three bound widens accordingly."""
+    from redteam.scorer import CheckResult, ProbeScore
+    scores = _make_scores("hallucination", 10, 0)
+    for i in range(5):
+        scores.append(ProbeScore(
+            probe_id=f"judge-{i}", axis="hallucination", vector="clinical_fabrication",
+            severity_if_failed="H3",
+            checks=[CheckResult(check="hall.phantom_patient_confirmed", passed=True)],
+            requires_judge=True,
+        ))
+    stats = compute_axis_stats("hallucination", scores, COST_WEIGHTS)
+    assert stats.n_probes == 10
+    assert stats.n_judge_pending == 5
+    assert stats.n_failed == 0
+    assert 0.25 < stats.ci_upper < 0.27  # rule_of_three(10), not (15)
+
+
+def test_axis_stats_judge_required_with_det_failure_still_counts():
+    """A judge-required probe that already fails deterministically is NOT pending —
+    it counts as a failure (the judge supplements, not replaces)."""
+    from redteam.scorer import CheckResult, ProbeScore
+    scores = [ProbeScore(
+        probe_id="j", axis="hallucination", vector="clinical_fabrication",
+        severity_if_failed="H3",
+        checks=[CheckResult(check="hall.phantom_patient_confirmed", passed=False, evidence="x")],
+        requires_judge=True,
+    )]
+    stats = compute_axis_stats("hallucination", scores, COST_WEIGHTS)
+    assert stats.n_probes == 1
+    assert stats.n_failed == 1
+    assert stats.n_judge_pending == 0
+
+
 # ---------------------------------------------------------------------------
 # CP2.A — clustered / effective-N correction
 # ---------------------------------------------------------------------------

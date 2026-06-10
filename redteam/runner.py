@@ -28,9 +28,24 @@ from .agent import ReceptionistSession
 from .db import PatientDB
 from .probe import Probe
 from .schema import GuardrailSetting, Transcript
-from .scorer import ProbeScore, score_probe
+from .scorer import CONTEXT_CHECKS, ProbeScore, score_probe
 from .severity import COST_WEIGHTS
 from .stats import AxisStats, compute_axis_stats
+
+
+# Guardrail modes whose FILTERING is actually wired. Until guardrail.py lands
+# (CP3.5), only "none" is real; selecting any other mode must hard-fail rather
+# than silently produce a scorecard labelled "guardrail-on" with no filter applied.
+WIRED_GUARDRAILS: frozenset[str] = frozenset({"none"})
+
+
+def validate_guardrail_mode(mode: str) -> None:
+    if mode not in WIRED_GUARDRAILS:
+        raise NotImplementedError(
+            f"guardrail mode {mode!r} is not wired yet — no filtering would be "
+            f"applied, so the scorecard label would be false. Only "
+            f"{sorted(WIRED_GUARDRAILS)} is valid until guardrail.py lands (CP3.5)."
+        )
 
 
 @dataclass
@@ -56,6 +71,7 @@ def run_probe(
 ) -> ProbeResult:
     """Run a single probe against the backend; return transcript + score."""
     cfg = config or RunConfig()
+    validate_guardrail_mode(cfg.guardrail_mode)
     guardrail = GuardrailSetting(
         mode=cfg.guardrail_mode,
         adaptive=cfg.adaptive,
@@ -124,6 +140,10 @@ class Scorecard:
     def failed_results(self) -> list[ProbeResult]:
         return [r for r in self.results if r.score.failed]
 
+    def observed_results(self) -> list[ProbeResult]:
+        """Probes with a tool-context observation but no scored failure."""
+        return [r for r in self.results if r.score.observations and not r.score.failed]
+
     def summary_lines(self) -> list[str]:
         lines = [
             f"=== Scorecard  guardrail={self.guardrail_mode}  model={self.target_model} ===",
@@ -137,22 +157,50 @@ class Scorecard:
         if failed:
             lines.append(f"Failed probes ({len(failed)}):")
             for r in failed:
-                checks_failed = [c.check for c in r.score.checks if not c.passed]
+                checks_failed = [
+                    c.check for c in r.score.checks
+                    if not c.passed and c.check not in CONTEXT_CHECKS
+                ]
                 lines.append(
                     f"  {r.probe.id}  {r.score.effective_severity}"
                     f"  checks={checks_failed}"
                 )
         else:
-            lines.append("No failures detected.")
+            lines.append("No scored (output) failures detected.")
+
+        observed = self.observed_results()
+        if observed:
+            lines.append("")
+            lines.append(
+                f"Observed (non-scored) tool-context signals ({len(observed)}) — "
+                f"NOT counted in the rate; flagged for the future tool-call gate:"
+            )
+            for r in observed:
+                for c in r.score.observations:
+                    lines.append(f"  {r.probe.id}  [{c.check}]  {c.evidence}")
+
         lines.append("")
         lines.append(
-            "LIMITATIONS: pilot-scale (≤40 probes); H1/H3 not deterministic; "
-            "no delegate-auth model; output-only guardrails cannot address tool misuse."
+            "LIMITATIONS: pilot-scale (≤40 probes); failure rate is OUTPUT-ONLY "
+            "(tool-context leaks observed, not scored); H1/H3 not deterministic "
+            "(judge-pending probes excluded from the denominator)."
         )
         return lines
 
     def print(self) -> None:
         print("\n".join(self.summary_lines()))
+
+    def _axis_dict(self, a: AxisStats) -> dict[str, Any]:
+        return {
+            "n_probes": a.n_probes,
+            "n_failed": a.n_failed,
+            "n_judge_pending": a.n_judge_pending,
+            "raw_asr": round(a.raw_asr, 4),
+            "cwASR": round(a.cwASR, 4),
+            "ci_lower": round(a.ci_lower, 4),
+            "ci_upper": round(a.ci_upper, 4),
+            "ci_method": a.ci_method,
+        }
 
     def to_dict(self) -> dict[str, Any]:
         failed = [
@@ -161,42 +209,48 @@ class Scorecard:
                 "axis": r.probe.axis,
                 "vector": r.probe.vector,
                 "severity": r.score.effective_severity,
-                "checks_failed": [c.check for c in r.score.checks if not c.passed],
-                "evidence": [c.evidence for c in r.score.checks if not c.passed],
+                "checks_failed": [
+                    c.check for c in r.score.checks
+                    if not c.passed and c.check not in CONTEXT_CHECKS
+                ],
+                "evidence": [
+                    c.evidence for c in r.score.checks
+                    if not c.passed and c.check not in CONTEXT_CHECKS
+                ],
                 "requires_judge": r.probe.requires_judge,
             }
             for r in self.results
             if r.score.failed
+        ]
+        observations = [
+            {
+                "probe_id": r.probe.id,
+                "axis": r.probe.axis,
+                "vector": r.probe.vector,
+                "checks": [c.check for c in r.score.observations],
+                "evidence": [c.evidence for c in r.score.observations],
+                "note": "tool-context signal; NOT scored under output-only policy",
+            }
+            for r in self.results
+            if r.score.observations
         ]
         return {
             "guardrail_mode": self.guardrail_mode,
             "run_at": self.run_at,
             "fixture_hash": self.fixture_hash,
             "target_model": self.target_model,
-            "phi": {
-                "n_probes": self.phi.n_probes,
-                "n_failed": self.phi.n_failed,
-                "raw_asr": round(self.phi.raw_asr, 4),
-                "cwASR": round(self.phi.cwASR, 4),
-                "ci_lower": round(self.phi.ci_lower, 4),
-                "ci_upper": round(self.phi.ci_upper, 4),
-                "ci_method": self.phi.ci_method,
-            },
-            "hall": {
-                "n_probes": self.hall.n_probes,
-                "n_failed": self.hall.n_failed,
-                "raw_asr": round(self.hall.raw_asr, 4),
-                "cwASR": round(self.hall.cwASR, 4),
-                "ci_lower": round(self.hall.ci_lower, 4),
-                "ci_upper": round(self.hall.ci_upper, 4),
-                "ci_method": self.hall.ci_method,
-            },
+            "scoring_policy": "output-only (tool-context findings observed, not scored)",
+            "phi": self._axis_dict(self.phi),
+            "hall": self._axis_dict(self.hall),
             "failed_probes": failed,
+            "observations": observations,
             "limitations": [
                 "pilot-scale: <= 40 probes, not pricing-grade",
-                "H1/H3 clinical/policy fabrication requires judge scoring",
+                "failure rate is OUTPUT-ONLY: tool-context / model-context leaks are "
+                "observed but not scored (tool-call gate is a later checkpoint)",
+                "H1/H3 clinical/policy fabrication requires judge scoring; "
+                "judge-pending probes are excluded from the denominator",
                 "no delegate-authorisation model in v1",
-                "output-only guardrails cannot address tool-call misuse (surface 2)",
             ],
         }
 

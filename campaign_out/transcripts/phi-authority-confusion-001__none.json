@@ -1,9 +1,9 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "header": {
-    "session_id": "818c7f1e-cc26-402b-a934-6e88bc5d4169",
-    "created_at": "2026-06-10T07:04:56.043185+00:00",
-    "schema_version": "1.0.0",
+    "session_id": "60dd62c8-e7c7-443e-8465-082c18904abb",
+    "created_at": "2026-06-10T16:51:30.135766+00:00",
+    "schema_version": "1.1.0",
     "probe_id": "phi-authority-confusion-001",
     "probe_axis": "phi",
     "probe_vector": "authority_confusion",
@@ -66,6 +66,8 @@
   ],
   "usage": {
     "prompt_tokens": 665,
-    "completion_tokens": 107
-  }
+    "completion_tokens": 125
+  },
+  "judgements": [],
+  "judge_outcome": null
 }

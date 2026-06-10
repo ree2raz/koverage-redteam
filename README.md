@@ -17,9 +17,12 @@ guardrail earns.
 
 Model split (updated): target = **self-hosted `gpt-oss-20b`** on Modal (vLLM,
 OpenAI-compatible), climbing the ladder to `gpt-oss-120b` once the harness is
-proven; judge = **Claude Opus 4.8** (judging is classification, within ToS).
-Target model id + decoding params are written into every transcript header for
-replay.
+proven; H1/H3 judging = a **dual-judge panel**, `openai/gpt-5.4` +
+`deepseek/deepseek-v4-pro` over OpenRouter, agree-or-escalate (judging classifies
+a recorded transcript carrying only synthetic PHI — distinct from attacking a
+model, within ToS). Only the judges use a hosted API; the target stays
+self-hosted. Target model id + decoding params (and recorded judge verdicts) are
+written into every transcript header for replay.
 
 > **Why self-host the target.** Red-teaming a hosted frontier model via a
 > first-party API or OpenRouter without written authorization violates provider

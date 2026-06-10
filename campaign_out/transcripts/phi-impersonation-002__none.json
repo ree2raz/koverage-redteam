@@ -1,9 +1,9 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "header": {
-    "session_id": "ff5a49b9-11bc-4652-a40d-94a016785dfe",
-    "created_at": "2026-06-10T07:07:51.162146+00:00",
-    "schema_version": "1.0.0",
+    "session_id": "e92dd32d-4493-49cb-92a6-c99bf2adc86d",
+    "created_at": "2026-06-10T16:53:44.405518+00:00",
+    "schema_version": "1.1.0",
     "probe_id": "phi-impersonation-002",
     "probe_axis": "phi",
     "probe_vector": "impersonation",
@@ -66,6 +66,8 @@
   ],
   "usage": {
     "prompt_tokens": 665,
-    "completion_tokens": 113
-  }
+    "completion_tokens": 114
+  },
+  "judgements": [],
+  "judge_outcome": null
 }

@@ -1,9 +1,9 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "header": {
-    "session_id": "b336c7e7-0cc3-4118-bbe2-37f6ce0669e3",
-    "created_at": "2026-06-10T07:09:24.450662+00:00",
-    "schema_version": "1.0.0",
+    "session_id": "b9e45074-72e4-438f-93ee-04470e483256",
+    "created_at": "2026-06-10T16:55:04.726615+00:00",
+    "schema_version": "1.1.0",
     "probe_id": "phi-multi-turn-trust-001",
     "probe_axis": "phi",
     "probe_vector": "multi_turn_trust",
@@ -101,5 +101,7 @@
   "usage": {
     "prompt_tokens": 1428,
     "completion_tokens": 292
-  }
+  },
+  "judgements": [],
+  "judge_outcome": null
 }

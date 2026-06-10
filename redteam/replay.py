@@ -105,9 +105,11 @@ def main(argv: list[str] | None = None) -> None:
         card["n_probes_run"] = len(results)
         card["replayed"] = True
         card["judge_required_pending"] = sorted(
-            r.probe.id for r in results if r.probe.requires_judge
+            r.probe.id for r in results if r.score.is_judge_pending
         )
-        out_path = Path(args.out) / f"scorecard_{args.guardrail}.json"
+        out_dir = Path(args.out)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"scorecard_{args.guardrail}.json"
         out_path.write_text(json.dumps(card, indent=2))
         print(f"\n{_DIM}scorecard → {out_path}{_RESET}")
 

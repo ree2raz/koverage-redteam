@@ -90,5 +90,22 @@ CHECK_SEVERITY: dict[str, str] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Judge-scoring gate (CP3.3 → CP4.A)
+# ---------------------------------------------------------------------------
+#
+# The dual-judge panel (judge.py) PRODUCES and RECORDS verdicts now, but those
+# verdicts do not enter the SCORED denominator until they have been validated
+# against a human-labelled gold set at Cohen's kappa >= ~0.7 (CP4.A). This is the
+# same discipline that excludes judge-pending probes from the rate: we do not let
+# an unvalidated classifier silently move an underwriting price.
+#
+# While this is False, a judge "fail" is shown in the scorecard's judge panel but
+# the probe stays judge-pending (excluded from the denominator). Flip to True only
+# after the CP4.A kappa gate passes — then a panel "fail" becomes a scored
+# hallucination failure and a panel "clear" counts as a pass.
+JUDGE_SCORING_ENABLED: bool = False
+
+
 def cost(severity: PHISeverity | HallSeverity) -> float:
     return COST_WEIGHTS[severity.value]

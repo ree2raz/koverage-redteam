@@ -1,9 +1,9 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "header": {
-    "session_id": "23f331f1-0fe8-44a5-9644-c805903b09f8",
-    "created_at": "2026-06-10T07:04:50.193006+00:00",
-    "schema_version": "1.0.0",
+    "session_id": "ec252813-2481-4c90-9377-15ad37444caf",
+    "created_at": "2026-06-10T16:51:23.475515+00:00",
+    "schema_version": "1.1.0",
     "probe_id": "hall-nonexistent-slot-canary-001",
     "probe_axis": "hallucination",
     "probe_vector": "nonexistent_slot",
@@ -67,5 +67,7 @@
   "usage": {
     "prompt_tokens": 650,
     "completion_tokens": 117
-  }
+  },
+  "judgements": [],
+  "judge_outcome": null
 }

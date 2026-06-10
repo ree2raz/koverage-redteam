@@ -54,6 +54,7 @@ class RunConfig:
     adaptive: bool = False
     decoding: dict[str, Any] = field(default_factory=lambda: {"temperature": 0.0})
     output_dir: Path | None = None  # if set, transcripts are written here
+    judge_panel: Any = None         # judge.JudgePanel | None — judges requires_judge probes
 
 
 @dataclass
@@ -90,6 +91,15 @@ def run_probe(
         session.send(turn_text)
 
     transcript = session.transcript(fixture_hash=db.fixture_hash())
+
+    # CP3.3: judge the clinical-fabrication probes BEFORE scoring, so the recorded
+    # panel outcome is on the transcript when score_probe reads it (and stays there
+    # for replay). No panel / non-judge probe → transcript carries no verdicts.
+    if cfg.judge_panel is not None and probe.requires_judge:
+        verdicts, outcome = cfg.judge_panel.evaluate(transcript, probe)
+        transcript.judgements = verdicts
+        transcript.judge_outcome = outcome
+
     score = score_probe(transcript, probe, db)
 
     if cfg.output_dir:
@@ -144,6 +154,10 @@ class Scorecard:
         """Probes with a tool-context observation but no scored failure."""
         return [r for r in self.results if r.score.observations and not r.score.failed]
 
+    def judged_results(self) -> list[ProbeResult]:
+        """Judge-required probes that actually received panel verdicts this run."""
+        return [r for r in self.results if r.score.judge_verdicts]
+
     def summary_lines(self) -> list[str]:
         lines = [
             f"=== Scorecard  guardrail={self.guardrail_mode}  model={self.target_model} ===",
@@ -178,6 +192,20 @@ class Scorecard:
             for r in observed:
                 for c in r.score.observations:
                     lines.append(f"  {r.probe.id}  [{c.check}]  {c.evidence}")
+
+        judged = self.judged_results()
+        if judged:
+            from .severity import JUDGE_SCORING_ENABLED
+            gate = "SCORED" if JUDGE_SCORING_ENABLED else "advisory (not scored until CP4.A κ-gate)"
+            lines.append("")
+            lines.append(f"Dual-judge panel ({len(judged)} judge-required) — {gate}:")
+            for r in judged:
+                votes = ", ".join(
+                    f"{v.judge_model}={v.verdict}" for v in r.score.judge_verdicts
+                )
+                lines.append(
+                    f"  {r.probe.id}  → {r.score.judge_outcome}  [{votes}]"
+                )
 
         lines.append("")
         lines.append(
@@ -234,22 +262,44 @@ class Scorecard:
             for r in self.results
             if r.score.observations
         ]
+        from .severity import JUDGE_SCORING_ENABLED
+        judge_panel = [
+            {
+                "probe_id": r.probe.id,
+                "axis": r.probe.axis,
+                "severity_if_failed": r.probe.severity_if_failed,
+                "outcome": r.score.judge_outcome,
+                "verdicts": [
+                    {
+                        "judge_model": v.judge_model,
+                        "verdict": v.verdict,
+                        "rationale": v.rationale,
+                    }
+                    for v in r.score.judge_verdicts
+                ],
+            }
+            for r in self.results
+            if r.score.judge_verdicts
+        ]
         return {
             "guardrail_mode": self.guardrail_mode,
             "run_at": self.run_at,
             "fixture_hash": self.fixture_hash,
             "target_model": self.target_model,
             "scoring_policy": "output-only (tool-context findings observed, not scored)",
+            "judge_scoring_enabled": JUDGE_SCORING_ENABLED,
             "phi": self._axis_dict(self.phi),
             "hall": self._axis_dict(self.hall),
             "failed_probes": failed,
             "observations": observations,
+            "judge_panel": judge_panel,
             "limitations": [
                 "pilot-scale: <= 40 probes, not pricing-grade",
                 "failure rate is OUTPUT-ONLY: tool-context / model-context leaks are "
                 "observed but not scored (tool-call gate is a later checkpoint)",
-                "H1/H3 clinical/policy fabrication requires judge scoring; "
-                "judge-pending probes are excluded from the denominator",
+                "H1/H3 clinical/policy fabrication is judged by a dual-judge panel "
+                "(advisory until the CP4.A κ-gate); judge-pending probes are "
+                "excluded from the denominator",
                 "no delegate-authorisation model in v1",
             ],
         }

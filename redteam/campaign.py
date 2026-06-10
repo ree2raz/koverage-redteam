@@ -33,6 +33,7 @@ import sys
 from pathlib import Path
 
 from .db import PatientDB
+from .judge import build_default_panel, preflight
 from .probe import Probe, load_probes_dir
 from .runner import ProbeResult, RunConfig, build_scorecard, run_probe
 from .target import DEFAULT_TARGET, build_target_backend
@@ -52,6 +53,7 @@ def run_campaign(
     *,
     limit: int | None = None,
     verbose: bool = False,
+    use_judge: bool = True,
 ) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     transcripts_dir = out_dir / "transcripts"
@@ -73,8 +75,32 @@ def run_campaign(
         print(f"{_RED}FAIL{_RESET} {exc}")
         return 1
 
+    # Build the dual-judge panel for clinical-fabrication probes. Preflight each
+    # judge once (cheap) before the run; a judge that can't be reached is a hard
+    # config error, not a silent skip that would leave H3 probes unjudged.
+    panel = None
+    n_judge = sum(1 for p in probes if p.requires_judge)
+    if use_judge and n_judge:
+        try:
+            panel = build_default_panel()
+        except Exception as exc:  # noqa: BLE001 - missing key / config
+            print(f"{_RED}FAIL{_RESET} could not build judge panel: {exc}")
+            return 1
+        print(f"{_DIM}judges: {' + '.join(panel.model_ids)} (via openrouter){_RESET}")
+        checks = preflight(panel)
+        for jmodel, ok, detail in checks:
+            mark = f"{_GREEN}ok{_RESET}" if ok else f"{_RED}FAIL{_RESET}"
+            print(f"{_DIM}  preflight {jmodel}: {mark} {detail}{_RESET}")
+        if not all(ok for _, ok, _ in checks):
+            print(f"{_RED}FAIL{_RESET} a judge is unreachable — fix the slug/key or run --no-judge")
+            return 1
+    elif n_judge:
+        print(f"{_YELLOW}note{_RESET} --no-judge: {n_judge} judge-required probe(s) stay pending")
+
     db = PatientDB.default()
-    cfg = RunConfig(guardrail_mode=guardrail_mode, output_dir=transcripts_dir)
+    cfg = RunConfig(
+        guardrail_mode=guardrail_mode, output_dir=transcripts_dir, judge_panel=panel
+    )
 
     print(
         f"{_DIM}campaign: {len(probes)} probes · target={model} "
@@ -114,7 +140,7 @@ def run_campaign(
     card["n_errored"] = len(errored)
     card["errored_probes"] = [{"probe_id": pid, "error": err} for pid, err in errored]
     card["judge_required_pending"] = sorted(
-        r.probe.id for r in results if r.probe.requires_judge
+        r.probe.id for r in results if r.score.is_judge_pending
     )
     scorecard_path = out_dir / f"scorecard_{guardrail_mode}.json"
     scorecard_path.write_text(json.dumps(card, indent=2))
@@ -145,6 +171,10 @@ def main(argv: list[str] | None = None) -> None:
     )
     p.add_argument("--limit", type=int, default=None, help="run only the first N probes")
     p.add_argument("--verbose", action="store_true", help="print passing probes too")
+    p.add_argument(
+        "--no-judge", action="store_true",
+        help="skip the dual-judge panel; judge-required probes stay pending",
+    )
     args = p.parse_args(argv)
     sys.exit(
         run_campaign(
@@ -154,6 +184,7 @@ def main(argv: list[str] | None = None) -> None:
             args.guardrail,
             limit=args.limit,
             verbose=args.verbose,
+            use_judge=not args.no_judge,
         )
     )
 

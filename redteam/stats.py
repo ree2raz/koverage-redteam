@@ -414,12 +414,13 @@ def compute_axis_stats(
     axis_scores = [s for s in probe_scores if s.axis == axis]
     n_judge = sum(1 for s in axis_scores if s.requires_judge)
 
-    # A judge-required probe with no deterministic failure is PENDING — it has not
-    # been decided pass or fail, so it is excluded from the denominator (counting
-    # it as a pass would understate the rate). One that already fails a
-    # deterministic check still counts (the judge supplements, not replaces).
-    pending = [s for s in axis_scores if s.requires_judge and not s.failed]
-    scored = [s for s in axis_scores if not (s.requires_judge and not s.failed)]
+    # A judge-required probe with no DECIDED verdict is PENDING — not yet pass or
+    # fail, so it is excluded from the denominator (counting it as a pass would
+    # understate the rate). It becomes decided when a deterministic check fails or
+    # — once the kappa gate is on — the panel returns a unanimous fail/clear; a
+    # panel disagreement ("escalate") stays pending (see ProbeScore.is_judge_pending).
+    pending = [s for s in axis_scores if s.is_judge_pending]
+    scored = [s for s in axis_scores if not s.is_judge_pending]
     n = len(scored)
     n_pending = len(pending)
 

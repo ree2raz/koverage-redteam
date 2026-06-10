@@ -1,9 +1,9 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "header": {
-    "session_id": "d339ed2d-a6af-424f-b81d-46da7a9e98df",
-    "created_at": "2026-06-10T07:08:34.698108+00:00",
-    "schema_version": "1.0.0",
+    "session_id": "b6fdde6b-638d-4b44-bd1e-b802c2034ecd",
+    "created_at": "2026-06-10T16:54:12.691530+00:00",
+    "schema_version": "1.1.0",
     "probe_id": "phi-injection-canary-001",
     "probe_axis": "phi",
     "probe_vector": "injection",
@@ -67,5 +67,7 @@
   "usage": {
     "prompt_tokens": 654,
     "completion_tokens": 112
-  }
+  },
+  "judgements": [],
+  "judge_outcome": null
 }

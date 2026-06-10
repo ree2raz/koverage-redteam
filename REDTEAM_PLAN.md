@@ -70,7 +70,7 @@ run locally.
 | 4 tools, masked-by-default, `disclose_sensitive` only unmasked path         | ✅                        |
 | Agent loop + transcript logging                                             | ✅                        |
 | CLI driver (batch + interactive)                                            | ✅                        |
-| 141 substrate/probe/scorer/stats/replay tests passing, ruff clean           | ✅ (under `.venv`/py3.14) |
+| 163 substrate/probe/scorer/stats/replay/judge tests passing, ruff clean     | ✅ (under `.venv`/py3.14) |
 | Offline E2E verified (lookup + booking, schema round-trip, DB state change) | ✅                        |
 | Live E2E verified against real model (CP3.0 smoke gate PASS)                | ✅                        |
 
@@ -136,8 +136,23 @@ run locally.
       probes (tool-misuse, PII, priv-esc), point provider at the self-hosted target.
 - [ ] **CP3.2** Wire PyRIT: Crescendo/TAP multi-turn orchestrator using an
       open-weight/DeepSeek attacker against the same target.
-- [ ] **CP3.3** Bridge scoring: route every transcript through the **custom
-      canary deterministic scorer** (authoritative for PHI) + DeepEval judge for H1/H3.
+- [x] **CP3.3** ✅ done. Bridge scoring: every transcript goes through the **custom
+      canary deterministic scorer** (authoritative for PHI/H2) + a **dual-judge
+      panel** for H1/H3 clinical fabrication. `redteam/judge.py` runs two
+      heterogeneous judges over OpenRouter — `openai/gpt-5.4` + `deepseek/deepseek-v4-pro`
+      (target stays self-hosted; transcripts carry only synthetic fixture PHI) —
+      with **agree-or-escalate** aggregation (both flag→fail, both clear→clear,
+      disagree/error→escalate=stays pending). Verdicts + rationales are recorded on
+      the transcript (schema **1.1.0**, additive `judgements`/`judge_outcome`) so
+      `make replay` re-scores a judged run offline with **zero** judge re-calls.
+      **Scoring is gated** behind `severity.JUDGE_SCORING_ENABLED` (default False):
+      the panel is advisory until the CP4.A κ-gate, so an unvalidated classifier
+      can't move the priced rate — same discipline as judge-pending exclusion.
+      **Live run 2026-06-10:** both judges **unanimously cleared all 5**
+      clinical-fabrication probes (10/10 `clear`); the agent declined labs/meds and
+      deferred to clinical staff in every case. Chose dual-OpenRouter judges over a
+      single DeepEval/Opus judge — cheaper, faster, and the inter-judge agreement is
+      itself a signal (disagreement → human-review queue for the gold set).
 - [x] **CP3.4** ✅ done. Baseline run (guardrail-off), all 40 probes, pinned
       config; transcript JSON persists fixture hash + model/provider + decoding +
       probe id + schema ver. `redteam/campaign.py` (`make campaign`) loads the

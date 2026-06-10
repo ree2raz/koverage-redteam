@@ -26,3 +26,6 @@ campaign:       ## CP3.4 full red-team run, baseline/guardrail-off (needs MODAL_
 
 replay:         ## Re-score saved transcripts with the current scorer (no compute)
 	$(PY) -m redteam.replay campaign_out/transcripts --out campaign_out
+
+calibrate:      ## CP4.A judge calibration: Cohen's κ vs the gold set (needs OPENROUTER_API_KEY)
+	$(PY) -m redteam.calibrate gold/clinical_fabrication_gold.yaml --out calibration_out

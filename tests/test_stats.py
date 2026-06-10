@@ -1,11 +1,13 @@
-"""Stats module tests — Wilson, Jeffreys, rule-of-three, AxisStats."""
+"""Stats module tests — Wilson, Jeffreys, rule-of-three, AxisStats, Cohen's κ."""
 
 from __future__ import annotations
 
+import pytest
 
 from redteam.stats import (
     aggregate_probe_outcome,
     clustered_failure_rate,
+    cohens_kappa,
     compute_axis_stats,
     design_effect,
     effective_n,
@@ -15,6 +17,39 @@ from redteam.stats import (
     wilson_interval,
 )
 from redteam.severity import COST_WEIGHTS
+
+
+# ---------------------------------------------------------------------------
+# Cohen's kappa (CP4.A)
+# ---------------------------------------------------------------------------
+
+
+def test_kappa_perfect_agreement():
+    a = ["flag", "clear", "flag", "clear"]
+    assert cohens_kappa(a, a) == 1.0
+
+
+def test_kappa_complete_disagreement_is_negative():
+    # Two raters who never agree on a balanced 2-class set → κ = -1.
+    assert cohens_kappa(["flag", "clear"], ["clear", "flag"]) == -1.0
+
+
+def test_kappa_textbook_value():
+    # Confusion: both-flag=4, both-clear=3, a-flag/b-clear=2, a-clear/b-flag=1.
+    # po=0.7, pe=0.5 → κ=0.4.
+    a = ["flag"]*4 + ["clear"]*3 + ["flag"]*2 + ["clear"]*1
+    b = ["flag"]*4 + ["clear"]*3 + ["clear"]*2 + ["flag"]*1
+    assert cohens_kappa(a, b) == pytest.approx(0.4, abs=1e-9)
+
+
+def test_kappa_single_category_both_raters():
+    # Both raters say "clear" for everything → chance agreement is total; κ=1.0.
+    assert cohens_kappa(["clear", "clear"], ["clear", "clear"]) == 1.0
+
+
+def test_kappa_length_mismatch_raises():
+    with pytest.raises(ValueError):
+        cohens_kappa(["flag"], ["flag", "clear"])
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +292,6 @@ def test_aggregate_majority_rule():
 
 
 def test_aggregate_unknown_rule_raises():
-    import pytest
     with pytest.raises(ValueError):
         aggregate_probe_outcome([True], rule="bogus")
 

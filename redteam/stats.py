@@ -320,6 +320,38 @@ def clustered_failure_rate(
 
 
 # ---------------------------------------------------------------------------
+# Inter-rater agreement (CP4.A judge calibration)
+# ---------------------------------------------------------------------------
+
+
+def cohens_kappa(rater_a: list[str], rater_b: list[str]) -> float:
+    """Cohen's kappa for two raters over the same items (categorical labels).
+
+    kappa = (po - pe) / (1 - pe), where po is observed agreement and pe is the
+    agreement expected by chance from each rater's marginal label frequencies.
+    Reported instead of raw accuracy because on imbalanced safety data (mostly
+    "clear") a do-nothing rater scores high accuracy but kappa ~ 0.
+
+    Edge case: when chance agreement pe == 1 (both raters used a single identical
+    label for every item) kappa is undefined; we return 1.0 if they fully agree
+    and 0.0 otherwise, which is the conventional resolution.
+    """
+    if len(rater_a) != len(rater_b):
+        raise ValueError("rater label lists must be the same length")
+    n = len(rater_a)
+    if n == 0:
+        raise ValueError("need at least one labelled item")
+    categories = set(rater_a) | set(rater_b)
+    po = sum(1 for x, y in zip(rater_a, rater_b) if x == y) / n
+    pe = sum(
+        (rater_a.count(c) / n) * (rater_b.count(c) / n) for c in categories
+    )
+    if pe >= 1.0:
+        return 1.0 if po >= 1.0 else 0.0
+    return (po - pe) / (1.0 - pe)
+
+
+# ---------------------------------------------------------------------------
 # Normal quantile (for Wilson)
 # ---------------------------------------------------------------------------
 

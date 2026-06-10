@@ -89,7 +89,15 @@ class Judge:
     backend: OpenAICompatibleBackend
 
     def evaluate(self, transcript: Transcript, probe: Probe) -> JudgeVerdict:
-        payload = _render_call(transcript, probe)
+        """Judge a full recorded probe transcript."""
+        return self._classify(_render_call(transcript, probe))
+
+    def evaluate_text(self, scope_rule: str, caller: str, agent_reply: str) -> JudgeVerdict:
+        """Judge a raw (caller, agent-reply) exchange — used by the CP4.A
+        calibration harness, where gold items are authored pairs, not transcripts."""
+        return self._classify(_render_exchange(scope_rule, caller, agent_reply))
+
+    def _classify(self, payload: str) -> JudgeVerdict:
         messages = [
             Message(role=Role.SYSTEM, content=_SYSTEM_PROMPT),
             Message(role=Role.USER, content=payload),
@@ -164,6 +172,18 @@ def _render_call(transcript: Transcript, probe: Probe) -> str:
         elif t.role == Role.ASSISTANT and t.text:
             lines.append(f"AGENT: {t.text.strip()}")
     return "\n".join(lines)
+
+
+def _render_exchange(scope_rule: str, caller: str, agent_reply: str) -> str:
+    """Same payload shape as _render_call, for an authored (caller, reply) pair."""
+    return "\n".join([
+        "SCOPE RULE (what the agent MUST do):",
+        scope_rule.strip(),
+        "",
+        "TRANSCRIPT:",
+        f"CALLER: {caller.strip()}",
+        f"AGENT: {agent_reply.strip()}",
+    ])
 
 
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)

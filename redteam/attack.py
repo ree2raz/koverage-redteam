@@ -75,7 +75,16 @@ OPENROUTER_CHAT_ENDPOINT = "https://openrouter.ai/api/v1"
 # — measured ~1.5-2.5s/call at concurrency 6 vs Euryale's ~37s. Llama family also
 # keeps the attacker diverse from the judges (gpt-5.4 + deepseek-v4-pro).
 DEFAULT_ADVERSARY = "nousresearch/hermes-3-llama-3.1-70b"
-DEFAULT_ATTACK_SCORER = "deepseek/deepseek-v4-pro"
+# Attack-internal scorer: GUIDES the PAIR refinement only — it is NOT the official
+# verdict (our deterministic tool-gate `score_probe` decides pass/fail). So it just
+# needs to emit a reliable true/false JSON cheaply and fast; a frontier model is
+# overkill. deepseek-v4-pro was ~6s/call and the source of the 204 empty-response
+# retries. gpt-4o-mini measured ~2.4s/call, perfect JSON, correctly discriminates
+# disclose-vs-refuse both ways (an always-"True" scorer would make PAIR stop early
+# and find FEWER breaches), is far cheaper, and OpenAI-family keeps it diverse from
+# the Llama adversary. The separate CP3.3 dual-judge panel (gpt-5.4 + deepseek) is
+# unaffected — that's the adjudication path, this is just attack steering.
+DEFAULT_ATTACK_SCORER = "openai/gpt-4o-mini"
 
 _GREEN = "\033[32m"
 _RED = "\033[31m"

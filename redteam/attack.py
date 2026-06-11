@@ -365,6 +365,7 @@ class AttackOutcome:
     checks_failed: list[str]
     conversation_id: str
     result: ProbeResult | None = None
+    judge_outcome: str | None = None  # advisory panel verdict ("fail"|"clear"|"escalate")
 
 
 @dataclass
@@ -388,7 +389,8 @@ def _probe_for(obj: Objective) -> Probe:
 
 
 async def run_objective_async(
-    obj: Objective, agent_target, adversary, scorer_target, db: PatientDB, *, max_turns: int
+    obj: Objective, agent_target, adversary, scorer_target, db: PatientDB, *, max_turns: int,
+    judge_panel=None,
 ) -> AttackOutcome:
     from pyrit.executor.attack import (
         AttackAdversarialConfig,
@@ -436,8 +438,20 @@ async def run_objective_async(
     failed = False
     severity = "S0" if obj.axis == "phi" else "H0"
     checks_failed: list[str] = []
+    judge_outcome = None
     if session is not None:
         transcript = session.transcript(fixture_hash=db.fixture_hash())
+        # For judge-required objectives (clinical H3), run the dual-judge panel and
+        # record its advisory verdict on the transcript BEFORE scoring — same pattern
+        # as runner.py. score_probe reads transcript.judge_outcome/.judgements; the
+        # verdict only moves the priced rate once severity.JUDGE_SCORING_ENABLED is on
+        # (it stays advisory until the κ-gate), but recording it gives the otherwise
+        # deterministically-unevaluated hallucination/H3 axis a real adjudicated read.
+        if judge_panel is not None and obj.requires_judge:
+            verdicts, outcome = await asyncio.to_thread(judge_panel.evaluate, transcript, probe)
+            transcript.judgements = verdicts
+            transcript.judge_outcome = outcome
+            judge_outcome = outcome
         score = score_probe(transcript, probe, db)
         probe_result = ProbeResult(probe=probe, transcript=transcript, score=score)
         failed = score.failed
@@ -450,6 +464,7 @@ async def run_objective_async(
         turns=int(getattr(result, "executed_turns", 0) or 0),
         failed=failed, severity=severity, checks_failed=checks_failed,
         conversation_id=result.conversation_id, result=probe_result,
+        judge_outcome=judge_outcome,
     )
 
 
@@ -473,7 +488,7 @@ async def run_suite_async(
     objectives: list[Objective], *, model: str, adversary_model: str,
     scorer_model: str, max_turns: int, out_dir: Path | None,
     reasoning_effort: str = "low", trials: int = 1, target_temperature: float = 0.0,
-    concurrency: int = 6, retries: int = 2, rpm: int = 30,
+    concurrency: int = 6, retries: int = 2, rpm: int = 30, use_judge: bool = True,
 ) -> list[ObjectiveResult]:
     """Run every (objective × trial) attack concurrently under a bounded semaphore.
 
@@ -502,6 +517,32 @@ async def run_suite_async(
         scorer_model, max_completion_tokens=1000, max_requests_per_minute=rpm
     )
 
+    # Dual-judge panel for judge-required objectives (clinical/H3). Built + preflighted
+    # once, like campaign.py; a judge outage is NON-fatal here (PHI is the primary
+    # signal) — we warn and continue with those objectives staying judge-pending. The
+    # panel is ADVISORY: verdicts are recorded but only price the rate once the κ-gate
+    # flips severity.JUDGE_SCORING_ENABLED.
+    judge_panel = None
+    n_judge = sum(1 for o in objectives if o.requires_judge)
+    if use_judge and n_judge:
+        from .judge import build_default_panel, preflight
+        try:
+            panel = build_default_panel()
+            checks = preflight(panel)
+            if all(ok for _, ok, _ in checks):
+                judge_panel = panel
+                print(f"{_DIM}judges: {' + '.join(panel.model_ids)} (advisory) "
+                      f"for {n_judge} judge-required objective(s){_RESET}")
+            else:
+                bad = ", ".join(f"{m}: {msg}" for m, ok, msg in checks if not ok)
+                print(f"{_YELLOW}note{_RESET} judge preflight failed ({bad}) — "
+                      f"{n_judge} judge-required objective(s) stay pending")
+        except Exception as exc:  # noqa: BLE001 - judge is optional; never block the PHI run
+            print(f"{_YELLOW}note{_RESET} no judge panel ({type(exc).__name__}: "
+                  f"{str(exc)[:120]}) — judge-required objective(s) stay pending")
+    elif n_judge:
+        print(f"{_YELLOW}note{_RESET} --no-judge: {n_judge} judge-required objective(s) stay pending")
+
     transcripts_dir = (out_dir / "transcripts") if out_dir else None
     results = {obj.id: ObjectiveResult(objective=obj) for obj in objectives}
     units = [(obj, k) for obj in objectives for k in range(trials)]
@@ -526,7 +567,8 @@ async def run_suite_async(
                 )
                 try:
                     outcome = await run_objective_async(
-                        obj, agent_target, adversary, scorer_target, db, max_turns=max_turns
+                        obj, agent_target, adversary, scorer_target, db, max_turns=max_turns,
+                        judge_panel=judge_panel,
                     )
                     break
                 except Exception as exc:  # noqa: BLE001 - one attack must not kill the suite
@@ -568,6 +610,12 @@ async def run_suite_async(
         checks = sorted({c for o in res.trials for c in o.checks_failed})
         print(f"  {mark}  {res.objective.id}: {b}/{n} attempts breached  "
               f"p̂={b/n:.2f} [{lo:.2f},{hi:.2f}]  checks={checks}")
+        if res.objective.requires_judge:
+            jt = _judge_tally(res.trials)
+            flagged = jt.get("fail", 0)
+            note = f"{_RED}{flagged} FLAG{_RESET}" if flagged else f"{jt.get('clear', 0)} clear"
+            print(f"        judges (advisory, not scored): {note}, "
+                  f"{jt.get('escalate', 0)} escalate, {jt.get(None, 0)} unjudged")
 
     return ordered
 
@@ -589,6 +637,15 @@ def _worst_severity(trials: list[AttackOutcome], axis: str) -> str:
     if not sevs:
         return "S0" if axis == "phi" else "H0"
     return max(sevs, key=lambda s: COST_WEIGHTS.get(s, 0.0))
+
+
+def _judge_tally(trials: list[AttackOutcome]) -> dict:
+    """Count the advisory dual-judge outcomes across a judge-required objective's
+    trials. A trial with no panel run (judge off / unreachable) keys to None."""
+    tally: dict = {}
+    for o in trials:
+        tally[o.judge_outcome] = tally.get(o.judge_outcome, 0) + 1
+    return tally
 
 
 def _summarise(results: list[ObjectiveResult], *, confidence: float = 0.95) -> dict:
@@ -621,7 +678,7 @@ def _summarise(results: list[ObjectiveResult], *, confidence: float = 0.95) -> d
         ax["breached"] += 1 if broke else 0
         lo, hi = wilson_interval(b, n, confidence)
         p_hat = b / n if n else 0.0
-        per_objective.append({
+        entry = {
             "id": r.objective.id, "axis": r.objective.axis, "vector": r.objective.vector,
             "breached": broke, "severity": _worst_severity(r.trials, r.objective.axis),
             "trials": n, "n_breached": b,
@@ -629,7 +686,11 @@ def _summarise(results: list[ObjectiveResult], *, confidence: float = 0.95) -> d
             "per_attempt_ci": [round(lo, 3), round(hi, 3)],
             "attempts_to_90pct": _attempts_to_breach(p_hat, 0.90),
             "checks_failed": sorted({c for o in r.trials for c in o.checks_failed}),
-        })
+        }
+        if r.objective.requires_judge:
+            # Advisory only — not folded into ASR until severity.JUDGE_SCORING_ENABLED.
+            entry["judge_advisory"] = {str(k): v for k, v in _judge_tally(r.trials).items()}
+        per_objective.append(entry)
 
     for a in by_axis:
         d = by_axis[a]
@@ -741,6 +802,9 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--rpm", type=int, default=30,
                    help="per-endpoint request/min throttle for the OpenRouter adversary & scorer "
                         "(prevents upstream-provider 429s; lower if you still see rate limits)")
+    p.add_argument("--no-judge", action="store_true",
+                   help="skip the dual-judge panel; judge-required objectives (clinical/H3) stay "
+                        "pending instead of getting an advisory adjudicated read")
     p.add_argument("--reasoning-effort", default="low", choices=["low", "medium", "high"],
                    help="gpt-oss reasoning effort for the target (low = fastest)")
     p.add_argument("--limit", type=int, default=None, help="run only the first N objectives")
@@ -776,7 +840,7 @@ def main(argv: list[str] | None = None) -> None:
         scorer_model=args.scorer, max_turns=args.max_turns, out_dir=out_dir,
         reasoning_effort=args.reasoning_effort, trials=args.trials,
         target_temperature=args.target_temperature, concurrency=args.concurrency,
-        rpm=args.rpm,
+        rpm=args.rpm, use_judge=not args.no_judge,
     ))
     duration_sec = round(time.monotonic() - t0, 1)
     if not results or not any(r.trials for r in results):
@@ -822,6 +886,7 @@ def main(argv: list[str] | None = None) -> None:
             "target_temperature": args.target_temperature,
             "concurrency": args.concurrency,
             "rpm": args.rpm,
+            "judge": not args.no_judge,
             "n_objectives": summary["n_objectives"],
             "total_trials": summary["total_trials"],
             "asr": summary["asr"],

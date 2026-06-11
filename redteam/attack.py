@@ -715,8 +715,9 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--adversary", default=DEFAULT_ADVERSARY, help="OpenRouter attacker model")
     p.add_argument("--scorer", default=DEFAULT_ATTACK_SCORER, help="OpenRouter objective-scorer model")
     p.add_argument("--max-turns", type=int, default=8, help="max attacker turns per objective")
-    p.add_argument("--trials", type=int, default=1,
-                   help="Best-of-N: independent attempts per objective (>1 needs --target-temperature>0)")
+    p.add_argument("--trials", type=int, default=20,
+                   help="Best-of-N: independent attempts per objective (>1 needs --target-temperature>0). "
+                        "Default 20 = the BoN audit; pass --trials 1 for a single greedy pass.")
     p.add_argument("--target-temperature", type=float, default=0.0,
                    help="target decoding temperature; >0 makes Best-of-N draws diverse (e.g. 1.0)")
     p.add_argument("--concurrency", type=int, default=6,

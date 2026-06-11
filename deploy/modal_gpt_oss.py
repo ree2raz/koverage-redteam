@@ -40,9 +40,14 @@ MODELS = {
     "20b": {
         "name": "openai/gpt-oss-20b",
         "revision": "d666cf3b67006cf8227666739edf25164aaffdeb",
-        # 20b (~16GB MXFP4) runs comfortably on a single A100-40GB or L40S.
-        # MXFP4 kernels are happiest on Hopper; A100 works via dequant path.
-        "gpu": "A100-40GB:1",
+        # gpt-oss is MXFP4-NATIVE. On Ampere (A100) vLLM has no MXFP4 kernel, so it
+        # dequantizes to bf16 (slow) AND we must --enforce-eager (no CUDA graphs):
+        # both worst-case penalties at once (~7 tok/s observed). H100 (Hopper) has
+        # the native Triton matmul_ogs MXFP4 kernel + CUDA graphs + fp8 KV cache —
+        # a ~3-5x latency win. Per-second cost is higher but the run finishes
+        # proportionally sooner, so a fixed workload is roughly cost-neutral.
+        # 20b (~16GB) leaves ample headroom on an 80GB H100.
+        "gpu": "H100:1",
     },
     "120b": {
         "name": "openai/gpt-oss-120b",
@@ -102,13 +107,21 @@ app = modal.App("redteam-gpt-oss")
 
 # vLLM server flags. Tool calling uses the gpt-oss `openai` parser — using any
 # other parser (hermes/llama3_json/mistral) fails or mangles arguments.
+# NOTE: automatic prefix caching is ON by default in vLLM v1, which reuses the KV
+# cache for the shared system prompt + growing history across the many turns of a
+# multi-turn attack — a large prefill saving for our workload, no flag needed.
 VLLM_CONFIG = {
     "max-model-len": 32768,
-    "max-num-batched-tokens": 16384,
+    # 8192 is the GPT-OSS recipe's recommended batched-token size (avoids the
+    # OOM the recipe warns about at 16384 on a single H100, TP=1).
+    "max-num-batched-tokens": 8192,
 }
 if _IS_HOPPER_PLUS:
     # fp8 KV cache needs E4M3 (fp8e4nv) — Hopper+ only; omit on Ampere.
     VLLM_CONFIG["kv-cache-dtype"] = "fp8"
+    # Cap CUDA-graph capture so we keep the graph speedup without over-spending
+    # GPU memory on capture (vLLM's recommended value).
+    VLLM_CONFIG["max-cudagraph-capture-size"] = 2048
 
 
 @app.function(

@@ -64,6 +64,14 @@ SCOPE LIMITS
 
 MAX_TOOL_HOPS = 6
 
+# Default decoding for the target. reasoning_effort="low" is a heavy latency win
+# on gpt-oss (a reasoning model): it cuts the chain-of-thought tokens generated
+# before each answer/tool-call. NOTE: this changes target BEHAVIOUR vs the medium
+# default, so it is recorded on the transcript's `decoding` for reproducibility —
+# runs at different efforts are not directly comparable. Callers may override any
+# key (including reasoning_effort) by passing their own `decoding`.
+DEFAULT_DECODING: dict[str, Any] = {"temperature": 0.0, "reasoning_effort": "low"}
+
 
 class ReceptionistSession:
     """One conversation between a caller and the receptionist agent.
@@ -89,7 +97,9 @@ class ReceptionistSession:
         self._tool_map = {t.name: t for t in tool_list}
         self._tool_schemas = [t.to_openai() for t in tool_list]
         self._memory = Memory(system_prompt=SYSTEM_PROMPT, max_turns=50)
-        self._decoding = decoding or {}
+        # Merge over defaults so reasoning_effort (and temperature) apply unless a
+        # caller explicitly overrides them.
+        self._decoding = {**DEFAULT_DECODING, **(decoding or {})}
         self._probe_id = probe_id
         self._probe_axis = probe_axis
         self._probe_vector = probe_vector

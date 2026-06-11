@@ -30,7 +30,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import subprocess
 import sys
+import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -224,7 +227,7 @@ def default_objectives(db: PatientDB) -> list[Objective]:
 # ---------------------------------------------------------------------------
 
 
-def _build_agent_target(backend, db: PatientDB):
+def _build_agent_target(backend, db: PatientDB, *, reasoning_effort: str = "low"):
     """Construct the AgentTarget lazily (PyRIT imports require initialize first)."""
     from pyrit.models import construct_response_from_request
     from pyrit.prompt_target import PromptTarget
@@ -255,7 +258,7 @@ def _build_agent_target(backend, db: PatientDB):
                     backend=backend, db=db, probe_id=f"attack-{cid[:8]}",
                     probe_axis="phi", probe_vector="impersonation",
                     guardrail_setting=GuardrailSetting(mode="none"),
-                    decoding={"temperature": 0.0},
+                    decoding={"temperature": 0.0, "reasoning_effort": reasoning_effort},
                 )
             return self.sessions[cid]
 
@@ -385,6 +388,7 @@ async def run_objective_async(
 async def run_suite_async(
     objectives: list[Objective], *, model: str, adversary_model: str,
     scorer_model: str, max_turns: int, out_dir: Path | None,
+    reasoning_effort: str = "low",
 ) -> list[AttackOutcome]:
     from pyrit.setup import IN_MEMORY, initialize_pyrit_async
 
@@ -398,7 +402,8 @@ async def run_suite_async(
     outcomes: list[AttackOutcome] = []
     transcripts_dir = (out_dir / "transcripts") if out_dir else None
     for i, obj in enumerate(objectives):
-        agent_target = _build_agent_target(backend, db)  # fresh sessions per objective
+        # fresh sessions per objective
+        agent_target = _build_agent_target(backend, db, reasoning_effort=reasoning_effort)
         print(f"{_DIM}[{i+1}/{len(objectives)}] {obj.id} ({obj.strategy}, ≤{max_turns} turns)…{_RESET}")
         try:
             outcome = await run_objective_async(
@@ -448,14 +453,81 @@ def _summarise(outcomes: list[AttackOutcome]) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Run archival — every `make attack` run is stored under attack_runs/<id>/ with
+# provenance, so runs never overwrite each other and stay auditable.
+# ---------------------------------------------------------------------------
+
+
+def _git_state() -> dict:
+    """Best-effort git SHA + dirty flag for run provenance."""
+    def _run(*cmd: str) -> str:
+        try:
+            return subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
+        except Exception:  # noqa: BLE001 - provenance is best-effort
+            return ""
+    sha = _run("git", "rev-parse", "--short", "HEAD")
+    dirty = bool(_run("git", "status", "--porcelain"))
+    branch = _run("git", "rev-parse", "--abbrev-ref", "HEAD")
+    return {"sha": sha, "dirty": dirty, "branch": branch}
+
+
+def _archive_run(run_dir: Path, summary: dict, meta: dict) -> Path:
+    """Persist one run's summary + provenance into run_dir (transcripts are already
+    there) and append a one-line row to <runs_dir>/LEDGER.md. Returns run_dir."""
+    runs_dir = run_dir.parent
+    run_id = run_dir.name
+    git = meta["git"]
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    (run_dir / "meta.json").write_text(json.dumps(meta, indent=2))
+    # Transcripts were written straight into run_dir/transcripts during the run.
+
+    # Stable pointer to the newest run for quick inspection / replay.
+    latest = runs_dir / "latest"
+    try:
+        if latest.is_symlink() or latest.exists():
+            latest.unlink()
+        latest.symlink_to(run_id)
+    except OSError:
+        pass  # symlinks may be unavailable (e.g. some filesystems) — non-fatal
+
+    ledger = runs_dir / "LEDGER.md"
+    if not ledger.exists():
+        ledger.write_text(
+            "# `make attack` run ledger\n\n"
+            "| run_id | started (UTC) | branch@sha | target / effort | adversary | "
+            "max_turns | ASR | phi | hall | dur |\n"
+            "|---|---|---|---|---|---|---|---|---|---|\n"
+        )
+    ba = summary["by_axis"]
+    row = (
+        f"| {run_id} | {meta['started_at']} | {git['branch']}@{git['sha']}"
+        f"{'*' if git['dirty'] else ''} | {meta['target_model']} / {meta['reasoning_effort']} | "
+        f"{meta['adversary_model']} | {meta['max_turns']} | "
+        f"{summary['n_breached']}/{summary['n_objectives']} ({summary['asr']:.0%}) | "
+        f"{ba['phi']['breached']}/{ba['phi']['n']} | {ba['hallucination']['breached']}/{ba['hallucination']['n']} | "
+        f"{meta['duration_sec']}s |\n"
+    )
+    with ledger.open("a") as fh:
+        fh.write(row)
+    return run_dir
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description="PyRIT multi-turn adversarial attack suite")
     p.add_argument("--model", default=DEFAULT_TARGET, help="self-hosted target model id")
     p.add_argument("--adversary", default=DEFAULT_ADVERSARY, help="OpenRouter attacker model")
     p.add_argument("--scorer", default=DEFAULT_ATTACK_SCORER, help="OpenRouter objective-scorer model")
     p.add_argument("--max-turns", type=int, default=8, help="max attacker turns per objective")
+    p.add_argument("--reasoning-effort", default="low", choices=["low", "medium", "high"],
+                   help="gpt-oss reasoning effort for the target (low = fastest)")
     p.add_argument("--limit", type=int, default=None, help="run only the first N objectives")
-    p.add_argument("--out", default="attack_out", help="output directory")
+    p.add_argument("--runs-dir", default="attack_runs",
+                   help="archive base; each run is stored under <runs-dir>/<id>/")
+    p.add_argument("--out", default=None,
+                   help="ad-hoc output dir (smoke/debug). If set, skips the archive + ledger.")
     args = p.parse_args(argv)
 
     db = PatientDB.default()
@@ -463,11 +535,24 @@ def main(argv: list[str] | None = None) -> None:
     if args.limit:
         objectives = objectives[:args.limit]
 
-    out_dir = Path(args.out) if args.out else None
+    started = datetime.now(timezone.utc)
+    # Ad-hoc --out skips archival; otherwise stage outputs in the archived run dir.
+    archived = args.out is None
+    if archived:
+        stamp = started.isoformat().replace(":", "").replace("-", "")[:15]
+        git = _git_state()
+        run_id = f"{stamp}__{git['sha'] or 'nogit'}" + ("__dirty" if git["dirty"] else "")
+        out_dir: Path | None = Path(args.runs_dir) / run_id
+    else:
+        out_dir = Path(args.out)
+
+    t0 = time.monotonic()
     outcomes = asyncio.run(run_suite_async(
         objectives, model=args.model, adversary_model=args.adversary,
         scorer_model=args.scorer, max_turns=args.max_turns, out_dir=out_dir,
+        reasoning_effort=args.reasoning_effort,
     ))
+    duration_sec = round(time.monotonic() - t0, 1)
     if not outcomes:
         print(f"{_RED}FAIL{_RESET} no objectives completed")
         sys.exit(1)
@@ -477,8 +562,27 @@ def main(argv: list[str] | None = None) -> None:
           f"({summary['asr']:.0%}) ===")
     for axis, s in summary["by_axis"].items():
         print(f"  {axis}: {s['breached']}/{s['n']} breached (ASR {s['asr']:.0%})")
-    if out_dir:
-        out_dir.mkdir(parents=True, exist_ok=True)
+
+    if out_dir is None:
+        return
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if archived:
+        meta = {
+            "started_at": started.isoformat(),
+            "duration_sec": duration_sec,
+            "target_model": args.model,
+            "reasoning_effort": args.reasoning_effort,
+            "adversary_model": args.adversary,
+            "scorer_model": args.scorer,
+            "max_turns": args.max_turns,
+            "n_objectives": summary["n_objectives"],
+            "asr": summary["asr"],
+            "git": _git_state(),
+        }
+        run_dir = _archive_run(out_dir, summary, meta)  # writes summary.json + meta.json
+        print(f"{_DIM}archived → {run_dir}  (ledger: {Path(args.runs_dir) / 'LEDGER.md'}){_RESET}")
+    else:
         (out_dir / "attack_summary.json").write_text(json.dumps(summary, indent=2))
         print(f"{_DIM}summary → {out_dir / 'attack_summary.json'}{_RESET}")
 

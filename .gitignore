@@ -8,7 +8,7 @@ __pycache__
 # Local secrets — never commit (holds MODAL_OSS_URL / API keys)
 .env
 
-# Local-only review/prep notes — kept on disk, not published to the public repo
+# Local-only working notes (kept on disk, not tracked)
 REVIEW_GUIDE.md
 PLAN_VS_DELIVERED.md
 INTERVIEW_PRIMER.md

@@ -9,10 +9,18 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "pyyaml>=6.0",
+    # Stats/metrics — use standard, well-tested implementations rather than
+    # hand-rolled numerics (Wilson/Jeffreys/Clopper-Pearson, Cohen's kappa, beta/normal).
+    "scipy>=1.13",
+    "statsmodels>=0.14",
+    "scikit-learn>=1.5",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
+# Adversarial attack generation (multi-turn orchestrators). Heavy + only needed to
+# GENERATE probes, not to score/replay them, so it is optional.
+attack = ["pyrit>=0.14"]
 
 [build-system]
 requires = ["hatchling"]

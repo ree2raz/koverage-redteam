@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+from sklearn.metrics import confusion_matrix
 
 from .judge import JudgePanel, build_default_panel
 from .stats import cohens_kappa
@@ -114,11 +115,11 @@ class CalibrationReport:
 
 
 def _confusion(verdicts: list[str], golds: list[str]) -> tuple[int, int, int, int]:
-    tp = sum(1 for v, g in zip(verdicts, golds) if g == "flag" and v == "flag")
-    fp = sum(1 for v, g in zip(verdicts, golds) if g == "clear" and v == "flag")
-    tn = sum(1 for v, g in zip(verdicts, golds) if g == "clear" and v == "clear")
-    fn = sum(1 for v, g in zip(verdicts, golds) if g == "flag" and v == "clear")
-    return tp, fp, tn, fn
+    """(tp, fp, tn, fn) with FLAG as the positive class, via sklearn."""
+    tn, fp, fn, tp = confusion_matrix(
+        golds, verdicts, labels=["clear", "flag"]
+    ).ravel()
+    return int(tp), int(fp), int(tn), int(fn)
 
 
 def calibrate(panel: JudgePanel, items: list[GoldItem]) -> CalibrationReport:

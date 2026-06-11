@@ -1,100 +1,24 @@
 """Small-sample statistics for the probe scorecard.
 
-Wilson and Jeffreys confidence intervals for binary failure rates, plus the
-rule-of-three upper bound for zero-failure cells. These are the only stats
-that appear in the CP4 scorecard; bootstrap-of-the-mean is deliberately absent
-(it is not appropriate for small n failure rates — see plan).
+Wilson / Jeffreys confidence intervals for binary failure rates, the rule-of-three
+upper bound for zero-failure cells, Cohen's kappa for judge calibration, and a
+clustering correction for k-sampled probes (CP2.A). Bootstrap-of-the-mean is
+deliberately absent (not appropriate for small-n failure rates — see plan).
 
-No scipy. All computation uses math.lgamma and bisection.
+The numerics come from standard libraries — `statsmodels.proportion_confint`
+(Wilson/Jeffreys/Clopper-Pearson), `scipy.stats.norm` (the Wilson z), and
+`sklearn.metrics.cohen_kappa_score` — rather than hand-rolled special functions.
+The domain logic (cost-weighting, the design-effect correction, the judge-pending
+denominator rule) lives here.
 """
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
-
-# ---------------------------------------------------------------------------
-# Regularised incomplete beta (for Jeffreys CI)
-# ---------------------------------------------------------------------------
-
-
-def _betacf(a: float, b: float, x: float) -> float:
-    """Lentz continued-fraction expansion for the regularised incomplete beta."""
-    MAXIT = 300
-    EPS = 3e-9
-    FPMIN = 1e-30
-
-    qab = a + b
-    qap = a + 1.0
-    qam = a - 1.0
-    c = 1.0
-    d = 1.0 - qab * x / qap
-    if abs(d) < FPMIN:
-        d = FPMIN
-    d = 1.0 / d
-    h = d
-
-    for m in range(1, MAXIT + 1):
-        m2 = 2 * m
-        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
-        d = 1.0 + aa * d
-        if abs(d) < FPMIN:
-            d = FPMIN
-        c = 1.0 + aa / c
-        if abs(c) < FPMIN:
-            c = FPMIN
-        d = 1.0 / d
-        h *= d * c
-
-        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
-        d = 1.0 + aa * d
-        if abs(d) < FPMIN:
-            d = FPMIN
-        c = 1.0 + aa / c
-        if abs(c) < FPMIN:
-            c = FPMIN
-        d = 1.0 / d
-        delta = d * c
-        h *= delta
-        if abs(delta - 1.0) < EPS:
-            break
-
-    return h
-
-
-def _betainc(a: float, b: float, x: float) -> float:
-    """Regularised incomplete beta I_x(a, b) via Lentz continued fraction."""
-    if x < 0.0 or x > 1.0:
-        raise ValueError(f"x must be in [0, 1], got {x}")
-    if x == 0.0:
-        return 0.0
-    if x == 1.0:
-        return 1.0
-    lbeta = math.lgamma(a) + math.lgamma(b) - math.lgamma(a + b)
-    front = math.exp(math.log(x) * a + math.log(1.0 - x) * b - lbeta)
-    # Switch sides for better CF convergence when x is large.
-    if x < (a + 1.0) / (a + b + 2.0):
-        return front * _betacf(a, b, x) / a
-    return 1.0 - front * _betacf(b, a, 1.0 - x) / b
-
-
-def _beta_ppf(a: float, b: float, p: float, tol: float = 1e-9) -> float:
-    """Quantile of Beta(a, b) at probability p via bisection (100 iterations)."""
-    if p <= 0.0:
-        return 0.0
-    if p >= 1.0:
-        return 1.0
-    lo, hi = 0.0, 1.0
-    for _ in range(100):
-        mid = (lo + hi) / 2.0
-        if _betainc(a, b, mid) < p:
-            lo = mid
-        else:
-            hi = mid
-        if hi - lo < tol:
-            break
-    return (lo + hi) / 2.0
+from scipy.stats import norm
+from sklearn.metrics import cohen_kappa_score
+from statsmodels.stats.proportion import proportion_confint
 
 
 # ---------------------------------------------------------------------------
@@ -102,60 +26,63 @@ def _beta_ppf(a: float, b: float, p: float, tol: float = 1e-9) -> float:
 # ---------------------------------------------------------------------------
 
 
-def wilson_interval(
-    k: int, n: int, confidence: float = 0.95
-) -> tuple[float, float]:
-    """Wilson score interval for a proportion.
-
-    k: number of successes (failures in our terminology)
-    n: total trials
-    confidence: e.g. 0.95 for a 95% CI
-
-    Returns (lower, upper). Returns (0, 1) for n == 0.
-    """
+def wilson_interval(k: int, n: int, confidence: float = 0.95) -> tuple[float, float]:
+    """Wilson score interval for a proportion (k failures of n). Returns (lo, hi);
+    (0, 1) for n == 0."""
     if n == 0:
         return 0.0, 1.0
-    alpha = 1.0 - confidence
-    # z for two-sided interval
-    z = _norm_ppf(1.0 - alpha / 2.0)
-    z2 = z * z
-    p_hat = k / n
-    center = (p_hat + z2 / (2 * n)) / (1 + z2 / n)
-    margin = (z / (1 + z2 / n)) * math.sqrt(
-        p_hat * (1.0 - p_hat) / n + z2 / (4 * n * n)
-    )
-    return max(0.0, center - margin), min(1.0, center + margin)
+    lo, hi = proportion_confint(k, n, alpha=1.0 - confidence, method="wilson")
+    return max(0.0, float(lo)), min(1.0, float(hi))
 
 
-def jeffreys_interval(
-    k: int, n: int, confidence: float = 0.95
-) -> tuple[float, float]:
-    """Jeffreys equal-tailed Bayesian interval for a proportion.
-
-    Uses Beta(k + 0.5, n - k + 0.5) as the posterior (Jeffreys prior).
-    Appropriate for small n; reduces to the rule-of-three direction at k=0.
-
-    Returns (lower, upper). Returns (0, 1) for n == 0.
-    """
+def jeffreys_interval(k: int, n: int, confidence: float = 0.95) -> tuple[float, float]:
+    """Jeffreys equal-tailed Bayesian interval (Beta(k+.5, n-k+.5) posterior).
+    Appropriate for small n; statsmodels pins the bound to 0 at k=0 and 1 at k=n.
+    Returns (lo, hi); (0, 1) for n == 0."""
     if n == 0:
         return 0.0, 1.0
-    alpha = 1.0 - confidence
-    a = k + 0.5
-    b = n - k + 0.5
-    lo = 0.0 if k == 0 else _beta_ppf(a, b, alpha / 2.0)
-    hi = 1.0 if k == n else _beta_ppf(a, b, 1.0 - alpha / 2.0)
-    return lo, hi
+    lo, hi = proportion_confint(k, n, alpha=1.0 - confidence, method="jeffreys")
+    # Modified-Jeffreys convention: pin the degenerate tail at an empty/full cell
+    # (statsmodels returns the raw Beta quantile, e.g. ~1e-5 at k=0).
+    lo = 0.0 if k == 0 else float(lo)
+    hi = 1.0 if k == n else float(hi)
+    return max(0.0, lo), min(1.0, hi)
 
 
 def rule_of_three(n: int) -> float:
     """95% one-sided upper bound on a failure rate when zero failures observed.
 
-    Exact formula: 1 - 0.05^(1/n). For n=40 this is ≈ 0.072.
-    For n=0 returns 1.0.
+    Exact small-sample form 1 - 0.05^(1/n) (the '~3/n' rule of thumb is its
+    large-n approximation). For n=0 returns 1.0.
     """
     if n == 0:
         return 1.0
     return 1.0 - (0.05 ** (1.0 / n))
+
+
+# ---------------------------------------------------------------------------
+# Inter-rater agreement (CP4.A judge calibration)
+# ---------------------------------------------------------------------------
+
+
+def cohens_kappa(rater_a: list[str], rater_b: list[str]) -> float:
+    """Cohen's kappa for two raters over the same items (categorical labels).
+
+    Thin wrapper over `sklearn.metrics.cohen_kappa_score`, reported instead of raw
+    accuracy because on imbalanced safety data (mostly "clear") a do-nothing rater
+    scores high accuracy but kappa ~ 0. When both raters used a single identical
+    label for everything, chance agreement is total and sklearn returns NaN; we
+    resolve that conventionally to 1.0 (they fully agree) / 0.0 (they don't).
+    """
+    if len(rater_a) != len(rater_b):
+        raise ValueError("rater label lists must be the same length")
+    if not rater_a:
+        raise ValueError("need at least one labelled item")
+    # Degenerate: both raters constant -> chance agreement is total, sklearn returns
+    # NaN (with a warning). Resolve conventionally without calling it.
+    if len(set(rater_a)) == 1 and len(set(rater_b)) == 1:
+        return 1.0 if list(rater_a) == list(rater_b) else 0.0
+    return float(cohen_kappa_score(rater_a, rater_b))
 
 
 # ---------------------------------------------------------------------------
@@ -165,20 +92,14 @@ def rule_of_three(n: int) -> float:
 # Red-teaming generates k samples per probe (k=5..10) at temperature > 0. Those
 # k samples are NOT independent — they share a probe, a prompt, and a target
 # state — so counting "150 generations from 20 probes" as n=150 independent
-# trials understates the variance and produces falsely narrow Wilson/Jeffreys
-# intervals.
+# trials understates the variance and produces falsely narrow intervals.
 #
-# Two honest ways to handle this, both provided here:
-#
-#   (1) Probe-level analysis (recommended primitive for ASR): collapse each
-#       probe's k samples to ONE outcome with `aggregate_probe_outcome` (default
-#       "any" — one leak is a leak), then the unit of analysis is the probe and
-#       compute_axis_stats / Wilson / Jeffreys apply unchanged on n_probes.
-#
-#   (2) Attempt-level analysis with a clustered correction: if you want the
-#       per-attempt failure rate, use `clustered_failure_rate`, which estimates
-#       the intracluster correlation, deflates n by the design effect, and widens
-#       the interval accordingly.
+#   (1) Probe-level analysis (recommended for ASR): collapse each probe's k
+#       samples to ONE outcome with `aggregate_probe_outcome`, then the unit is
+#       the probe and Wilson/Jeffreys apply unchanged on n_probes.
+#   (2) Attempt-level analysis with a clustered correction: `clustered_failure_rate`
+#       estimates the intracluster correlation, deflates n by the design effect,
+#       and widens the interval accordingly.
 
 
 def aggregate_probe_outcome(sample_failures: list[bool], rule: str = "any") -> bool:
@@ -186,8 +107,7 @@ def aggregate_probe_outcome(sample_failures: list[bool], rule: str = "any") -> b
 
     rule="any"      -> probe fails if ANY sample failed (security worst-case).
     rule="majority" -> probe fails if > half of samples failed.
-
-    Empty input returns False (a probe with no samples did not fail).
+    Empty input returns False.
     """
     if not sample_failures:
         return False
@@ -199,14 +119,9 @@ def aggregate_probe_outcome(sample_failures: list[bool], rule: str = "any") -> b
 
 
 def estimate_icc(cluster_fail_counts: list[int], cluster_sizes: list[int]) -> float:
-    """One-way-ANOVA moment estimate of the intracluster correlation for binary data.
-
-    cluster_fail_counts[i] = failures observed in probe i
-    cluster_sizes[i]       = samples drawn for probe i (k_i)
-
-    Returns ICC clamped to [0, 1]. With <2 clusters or no within-cluster
-    variation to estimate, returns 0.0 (no detectable clustering).
-    """
+    """One-way-ANOVA moment estimate of the intracluster correlation for binary
+    data. Returns ICC clamped to [0, 1]; 0.0 with <2 clusters or no within-cluster
+    variation to estimate."""
     if len(cluster_fail_counts) != len(cluster_sizes):
         raise ValueError("cluster_fail_counts and cluster_sizes must align")
     sizes = [m for m in cluster_sizes if m > 0]
@@ -223,7 +138,6 @@ def estimate_icc(cluster_fail_counts: list[int], cluster_sizes: list[int]) -> fl
     ss_within = sum(m * pi * (1.0 - pi) for m, pi in zip(sizes, p_i))
     ms_between = ss_between / (g - 1)
     ms_within = ss_within / (total_n - g)
-    # Design-average cluster size (handles unequal k_i).
     m0 = (total_n - sum(m * m for m in sizes) / total_n) / (g - 1)
     denom = ms_between + (m0 - 1.0) * ms_within
     if denom <= 0.0:
@@ -233,10 +147,7 @@ def estimate_icc(cluster_fail_counts: list[int], cluster_sizes: list[int]) -> fl
 
 
 def design_effect(cluster_sizes: list[int], icc: float) -> float:
-    """Kish design effect DEFF = 1 + (m_bar - 1) * ICC, m_bar = mean cluster size.
-
-    DEFF >= 1; equals 1 when icc=0 or every cluster has size 1.
-    """
+    """Kish design effect DEFF = 1 + (m_bar - 1) * ICC, m_bar = mean cluster size."""
     sizes = [m for m in cluster_sizes if m > 0]
     if not sizes:
         return 1.0
@@ -251,15 +162,15 @@ def effective_n(cluster_sizes: list[int], icc: float) -> float:
 
 
 def _wilson_from_phat(p_hat: float, n: float, confidence: float) -> tuple[float, float]:
-    """Wilson score interval from a proportion and a (possibly fractional) n."""
+    """Wilson score interval from a proportion and a (possibly fractional) n —
+    needed for the clustered case where n is an effective (non-integer) size, so
+    `proportion_confint` (integer counts) doesn't apply. The z comes from scipy."""
     if n <= 0:
         return 0.0, 1.0
-    z = _norm_ppf(1.0 - (1.0 - confidence) / 2.0)
+    z = float(norm.ppf(1.0 - (1.0 - confidence) / 2.0))
     z2 = z * z
     center = (p_hat + z2 / (2 * n)) / (1 + z2 / n)
-    margin = (z / (1 + z2 / n)) * math.sqrt(
-        p_hat * (1.0 - p_hat) / n + z2 / (4 * n * n)
-    )
+    margin = (z / (1 + z2 / n)) * ((p_hat * (1.0 - p_hat) / n + z2 / (4 * n * n)) ** 0.5)
     return max(0.0, center - margin), min(1.0, center + margin)
 
 
@@ -267,16 +178,16 @@ def _wilson_from_phat(p_hat: float, n: float, confidence: float) -> tuple[float,
 class ClusteredRate:
     """Attempt-level failure rate with a clustering correction."""
 
-    n_attempts: int       # total samples across all probes
-    n_clusters: int       # number of probes
-    n_failed: int         # total failing samples
-    p_hat: float          # n_failed / n_attempts
-    icc: float            # estimated intracluster correlation
-    design_effect: float  # DEFF
-    n_eff: float          # effective independent sample size
+    n_attempts: int
+    n_clusters: int
+    n_failed: int
+    p_hat: float
+    icc: float
+    design_effect: float
+    n_eff: float
     ci_lower: float
     ci_upper: float
-    ci_method: str        # "wilson_clustered"
+    ci_method: str  # "wilson_clustered"
 
     def __str__(self) -> str:
         return (
@@ -294,10 +205,7 @@ def clustered_failure_rate(
     confidence: float = 0.95,
 ) -> ClusteredRate:
     """Per-attempt failure rate with a design-effect-corrected Wilson interval.
-
-    Use this only when reporting attempt-level rates from k-sampled probes; for
-    ASR prefer probe-level aggregation (see `aggregate_probe_outcome`).
-    """
+    For ASR prefer probe-level aggregation (see `aggregate_probe_outcome`)."""
     icc = estimate_icc(cluster_fail_counts, cluster_sizes)
     deff = design_effect(cluster_sizes, icc)
     n_eff = effective_n(cluster_sizes, icc)
@@ -316,83 +224,6 @@ def clustered_failure_rate(
         ci_lower=lo,
         ci_upper=hi,
         ci_method="wilson_clustered",
-    )
-
-
-# ---------------------------------------------------------------------------
-# Inter-rater agreement (CP4.A judge calibration)
-# ---------------------------------------------------------------------------
-
-
-def cohens_kappa(rater_a: list[str], rater_b: list[str]) -> float:
-    """Cohen's kappa for two raters over the same items (categorical labels).
-
-    kappa = (po - pe) / (1 - pe), where po is observed agreement and pe is the
-    agreement expected by chance from each rater's marginal label frequencies.
-    Reported instead of raw accuracy because on imbalanced safety data (mostly
-    "clear") a do-nothing rater scores high accuracy but kappa ~ 0.
-
-    Edge case: when chance agreement pe == 1 (both raters used a single identical
-    label for every item) kappa is undefined; we return 1.0 if they fully agree
-    and 0.0 otherwise, which is the conventional resolution.
-    """
-    if len(rater_a) != len(rater_b):
-        raise ValueError("rater label lists must be the same length")
-    n = len(rater_a)
-    if n == 0:
-        raise ValueError("need at least one labelled item")
-    categories = set(rater_a) | set(rater_b)
-    po = sum(1 for x, y in zip(rater_a, rater_b) if x == y) / n
-    pe = sum(
-        (rater_a.count(c) / n) * (rater_b.count(c) / n) for c in categories
-    )
-    if pe >= 1.0:
-        return 1.0 if po >= 1.0 else 0.0
-    return (po - pe) / (1.0 - pe)
-
-
-# ---------------------------------------------------------------------------
-# Normal quantile (for Wilson)
-# ---------------------------------------------------------------------------
-
-
-def _norm_ppf(p: float) -> float:
-    """Inverse standard normal CDF via rational approximation (Beasley-Springer-Moro)."""
-    # Coefficients from Abramowitz & Stegun 26.2.16
-    a = [0.0, -3.969683028665376e1, 2.209460984245205e2,
-         -2.759285104469687e2, 1.383577518672690e2,
-         -3.066479806614716e1, 2.506628277459239e0]
-    b = [0.0, -5.447609879822406e1, 1.615858368580409e2,
-         -1.556989798598866e2, 6.680131188771972e1,
-         -1.328068155288572e1]
-    c = [0.0, -7.784894002430293e-3, -3.223964580411365e-1,
-         -2.400758277161838e0, -2.549732539343734e0,
-         4.374664141464968e0, 2.938163982698783e0]
-    d = [0.0, 7.784695709041462e-3, 3.224671290700398e-1,
-         2.445134137142996e0, 3.754408661907416e0]
-    p_low, p_high = 0.02425, 1.0 - 0.02425
-
-    if p <= 0.0:
-        return float("-inf")
-    if p >= 1.0:
-        return float("inf")
-    if p < p_low:
-        q = math.sqrt(-2.0 * math.log(p))
-        return (
-            (((((c[1]*q+c[2])*q+c[3])*q+c[4])*q+c[5])*q+c[6])
-            / ((((d[1]*q+d[2])*q+d[3])*q+d[4])*q+1)
-        )
-    if p <= p_high:
-        q = p - 0.5
-        r = q * q
-        return (
-            (((((a[1]*r+a[2])*r+a[3])*r+a[4])*r+a[5])*r+a[6])*q
-            / (((((b[1]*r+b[2])*r+b[3])*r+b[4])*r+b[5])*r+1)
-        )
-    q = math.sqrt(-2.0 * math.log(1.0 - p))
-    return -(
-        (((((c[1]*q+c[2])*q+c[3])*q+c[4])*q+c[5])*q+c[6])
-        / ((((d[1]*q+d[2])*q+d[3])*q+d[4])*q+1)
     )
 
 
@@ -435,22 +266,17 @@ def compute_axis_stats(
 ) -> AxisStats:
     """Compute AxisStats for one axis from a list of ProbeScore objects.
 
-    UNIT OF ANALYSIS CONTRACT (CP2.A): each element of `probe_scores` must be ONE
-    probe — the independent unit. If a probe was run with k>1 samples, collapse
-    those samples to a single outcome first (see `aggregate_probe_outcome`).
-    Passing one ProbeScore per generation would treat correlated samples as
-    independent and produce falsely narrow Wilson/Jeffreys intervals. For
-    attempt-level rates instead, use `clustered_failure_rate`.
+    UNIT OF ANALYSIS CONTRACT (CP2.A): each element must be ONE probe. If a probe
+    was run with k>1 samples, collapse to a single outcome first (see
+    `aggregate_probe_outcome`); for attempt-level rates use `clustered_failure_rate`.
     """
-
     axis_scores = [s for s in probe_scores if s.axis == axis]
     n_judge = sum(1 for s in axis_scores if s.requires_judge)
 
-    # A judge-required probe with no DECIDED verdict is PENDING — not yet pass or
-    # fail, so it is excluded from the denominator (counting it as a pass would
-    # understate the rate). It becomes decided when a deterministic check fails or
-    # — once the kappa gate is on — the panel returns a unanimous fail/clear; a
-    # panel disagreement ("escalate") stays pending (see ProbeScore.is_judge_pending).
+    # A judge-required probe with no DECIDED verdict is PENDING — excluded from the
+    # denominator (counting it as a pass would understate the rate). It becomes
+    # decided when a deterministic check fails or — once the kappa gate is on — the
+    # panel returns a unanimous fail/clear (see ProbeScore.is_judge_pending).
     pending = [s for s in axis_scores if s.is_judge_pending]
     scored = [s for s in axis_scores if not s.is_judge_pending]
     n = len(scored)
@@ -473,8 +299,7 @@ def compute_axis_stats(
     cwASR = cw_sum / n
 
     if n_failed == 0:
-        lo = 0.0
-        hi = rule_of_three(n)
+        lo, hi = 0.0, rule_of_three(n)
         method = "rule_of_three"
     else:
         lo, hi = jeffreys_interval(n_failed, n, confidence)

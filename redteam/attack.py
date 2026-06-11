@@ -269,7 +269,7 @@ def default_objectives(db: PatientDB) -> list[Objective]:
 
 
 def _build_agent_target(
-    backend, db: PatientDB, *, reasoning_effort: str = "low", target_temperature: float = 0.0
+    backend, db: PatientDB, *, reasoning_effort: str | None = "low", target_temperature: float = 0.0
 ):
     """Construct the AgentTarget lazily (PyRIT imports require initialize first).
 
@@ -506,6 +506,10 @@ async def run_suite_async(
 
     db = PatientDB.default()
     backend = build_target_backend(model)
+    # reasoning_effort is a gpt-oss-only decoding knob; a non-reasoning target (e.g.
+    # Mistral-Small-24B) would 400 on it, so drop it for the portable comparison.
+    is_gpt_oss = model.lower().startswith("openai/gpt-oss")
+    effort = reasoning_effort if is_gpt_oss else None
     # The adversary writes a short in-character caller turn (cap 1024 is ample). The
     # scorer must NOT be capped tight: SelfAskTrueFalseScorer returns JSON with a
     # long `rationale`, and truncating it mid-string yields "Invalid JSON" 500s — so
@@ -552,8 +556,9 @@ async def run_suite_async(
     counter = {"done": 0}
 
     bon = f", Best-of-{trials} @T={target_temperature}" if trials > 1 else ""
-    print(f"{_DIM}running {total} attacks ({len(objectives)} objectives{bon}) "
-          f"≤{max_turns} turns, concurrency={concurrency}, {rpm} req/min/endpoint…{_RESET}")
+    print(f"{_DIM}target {model} (effort={effort}) — running {total} attacks "
+          f"({len(objectives)} objectives{bon}) ≤{max_turns} turns, "
+          f"concurrency={concurrency}, {rpm} req/min/endpoint…{_RESET}")
 
     async def run_unit(obj: Objective, k: int) -> None:
         async with sem:
@@ -562,7 +567,7 @@ async def run_suite_async(
             for attempt in range(retries + 1):
                 # Fresh session per attempt so retries/draws are independent.
                 agent_target = _build_agent_target(
-                    backend, db, reasoning_effort=reasoning_effort,
+                    backend, db, reasoning_effort=effort,
                     target_temperature=target_temperature,
                 )
                 try:

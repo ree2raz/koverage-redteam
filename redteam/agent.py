@@ -98,8 +98,11 @@ class ReceptionistSession:
         self._tool_schemas = [t.to_openai() for t in tool_list]
         self._memory = Memory(system_prompt=SYSTEM_PROMPT, max_turns=50)
         # Merge over defaults so reasoning_effort (and temperature) apply unless a
-        # caller explicitly overrides them.
-        self._decoding = {**DEFAULT_DECODING, **(decoding or {})}
+        # caller explicitly overrides them. A caller can DROP a default (e.g.
+        # reasoning_effort, which only gpt-oss accepts) by passing it as None — we
+        # strip None-valued keys so a non-reasoning target's endpoint never sees it.
+        self._decoding = {k: v for k, v in {**DEFAULT_DECODING, **(decoding or {})}.items()
+                          if v is not None}
         self._probe_id = probe_id
         self._probe_axis = probe_axis
         self._probe_vector = probe_vector

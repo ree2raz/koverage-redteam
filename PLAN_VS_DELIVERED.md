@@ -101,7 +101,10 @@ Consequences:
 - **White-box techniques are explicitly out of scope** (GCG/logit/reasoning-channel injection):
   they assume access an insurer lacks and don't transfer across families.
 - **Demonstrated deeply on `gpt-oss-20b`**; the portability plumbing (per-family tool-call parser,
-  a 2nd gpt-oss variant, and an other-family ~20B model) is built/scoped and can be run on request.
+  auto-dropping the gpt-oss-only `reasoning_effort` knob) is built. The chosen other-family analog
+  is **Qwen3-30B-A3B** — a MoE with ~3B active params (gpt-oss-20b is ~3.6B active), i.e. the
+  closest match in _how it works_ from a different vendor — wired and ready to run as a second
+  self-hosted target.
 
 ---
 

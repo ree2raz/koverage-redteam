@@ -29,3 +29,6 @@ replay:         ## Re-score saved transcripts with the current scorer (no comput
 
 calibrate:      ## CP4.A judge calibration: Cohen's κ vs the gold set (needs OPENROUTER_API_KEY)
 	$(PY) -m redteam.calibrate gold/clinical_fabrication_gold.yaml --out calibration_out
+
+attack:         ## CP3.2 PyRIT multi-turn adversarial attacks (needs MODAL_OSS_URL + OPENROUTER_API_KEY)
+	$(PY) -m redteam.attack --out attack_out

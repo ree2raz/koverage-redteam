@@ -36,19 +36,38 @@ MODEL_KEY = "20b"
 
 # Pinned revisions for reproducibility. Update via `huggingface-cli` if you
 # deliberately bump weights — and note the bump in a transcript/run record.
+# Each entry pins a model + its vLLM tool-call parser (family-specific — the
+# PORTABILITY knob: gpt-oss uses "openai", Qwen3 uses "hermes", Mistral "mistral").
 MODELS = {
     "20b": {
         "name": "openai/gpt-oss-20b",
         "revision": "d666cf3b67006cf8227666739edf25164aaffdeb",
-        # 20b (~16GB MXFP4) runs comfortably on a single A100-40GB or L40S.
-        # MXFP4 kernels are happiest on Hopper; A100 works via dequant path.
-        "gpu": "A100-40GB:1",
+        # gpt-oss is MXFP4-NATIVE. On Ampere (A100) vLLM has no MXFP4 kernel, so it
+        # dequantizes to bf16 (slow) AND we must --enforce-eager (no CUDA graphs):
+        # both worst-case penalties at once (~7 tok/s observed). H100 (Hopper) has
+        # the native Triton matmul_ogs MXFP4 kernel + CUDA graphs + fp8 KV cache —
+        # a ~3-5x latency win. 20b (~16GB) leaves ample headroom on an 80GB H100.
+        "gpu": "H100:1",
+        "tool_call_parser": "openai",
     },
     "120b": {
         "name": "openai/gpt-oss-120b",
         # Pin this to a concrete commit before any scored 120b run.
         "revision": None,
         "gpu": "H100:1",
+        "tool_call_parser": "openai",
+    },
+    # PORTABILITY target: the other-family analog of gpt-oss-20b. Qwen3-30B-A3B is
+    # also a MoE with ~3B ACTIVE params (gpt-oss-20b is ~3.6B active) — closest match
+    # in "how it works", different vendor (Alibaba). Dense ~30B weights fit on an
+    # 80GB H100 in bf16. Tool calling via vLLM's `hermes` parser. The non-thinking
+    # Instruct variant ≈ gpt-oss at reasoning_effort=low (the harness drops the
+    # gpt-oss-only reasoning_effort knob for non-gpt-oss targets automatically).
+    "qwen3-30b": {
+        "name": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "revision": None,
+        "gpu": "H100:1",
+        "tool_call_parser": "hermes",
     },
 }
 
@@ -56,6 +75,10 @@ CFG = MODELS[MODEL_KEY]
 MODEL_NAME = CFG["name"]
 MODEL_REVISION = CFG["revision"]
 GPU = CFG["gpu"]
+TOOL_CALL_PARSER = CFG["tool_call_parser"]
+# gpt-oss-specific serving extras (MXFP4 FlashInfer MoE kernel) — only meaningful
+# for the MXFP4-native gpt-oss weights; harmless but irrelevant for bf16 models.
+_IS_GPT_OSS = MODEL_NAME.startswith("openai/gpt-oss")
 
 # fp8 KV-cache (fp8e4nv / E4M3) and the FlashInfer MXFP4 MoE kernels only exist
 # on Hopper+ (H100/H200/B200). On Ampere (A100) they fail to compile
@@ -78,8 +101,9 @@ STARTUP_TIMEOUT = 1800
 # ---------------------------------------------------------------------------
 
 _IMAGE_ENV = {"HF_HUB_ENABLE_HF_TRANSFER": "1"}
-if _IS_HOPPER_PLUS:
-    # Faster MXFP4 MoE kernels — Hopper/Blackwell only.
+if _IS_HOPPER_PLUS and _IS_GPT_OSS:
+    # Faster MXFP4 MoE kernels — Hopper/Blackwell only, and only the MXFP4-native
+    # gpt-oss weights use them (a bf16 model like Qwen3 ignores this).
     _IMAGE_ENV["VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8"] = "1"
 
 vllm_image = (
@@ -102,13 +126,21 @@ app = modal.App("redteam-gpt-oss")
 
 # vLLM server flags. Tool calling uses the gpt-oss `openai` parser — using any
 # other parser (hermes/llama3_json/mistral) fails or mangles arguments.
+# NOTE: automatic prefix caching is ON by default in vLLM v1, which reuses the KV
+# cache for the shared system prompt + growing history across the many turns of a
+# multi-turn attack — a large prefill saving for our workload, no flag needed.
 VLLM_CONFIG = {
     "max-model-len": 32768,
-    "max-num-batched-tokens": 16384,
+    # 8192 is the GPT-OSS recipe's recommended batched-token size (avoids the
+    # OOM the recipe warns about at 16384 on a single H100, TP=1).
+    "max-num-batched-tokens": 8192,
 }
 if _IS_HOPPER_PLUS:
     # fp8 KV cache needs E4M3 (fp8e4nv) — Hopper+ only; omit on Ampere.
     VLLM_CONFIG["kv-cache-dtype"] = "fp8"
+    # Cap CUDA-graph capture so we keep the graph speedup without over-spending
+    # GPU memory on capture (vLLM's recommended value).
+    VLLM_CONFIG["max-cudagraph-capture-size"] = 2048
 
 
 @app.function(
@@ -139,7 +171,7 @@ def serve() -> None:
         # --- tool / function calling for gpt-oss ---
         "--enable-auto-tool-choice",
         "--tool-call-parser",
-        "openai",
+        TOOL_CALL_PARSER,
         # --- serving knobs ---
         "--async-scheduling",
         "--tensor-parallel-size",

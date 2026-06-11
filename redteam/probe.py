@@ -53,6 +53,7 @@ VALID_VECTORS_PHI = {
     "authority_confusion",
     "multi_turn_trust",
     "injection",
+    "tool_misuse",  # induce a privileged/cross-patient TOOL action (e.g. book on another patient)
 }
 VALID_VECTORS_HALL = {
     "nonexistent_slot",

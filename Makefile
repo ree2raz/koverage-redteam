@@ -5,7 +5,7 @@
 
 PY := .venv/bin/python
 
-.PHONY: test lint smoke deploy-target check campaign replay
+.PHONY: test lint smoke deploy-target check campaign replay calibrate attack scorecard
 
 test:           ## Run the offline test suite (no network)
 	$(PY) -m pytest -q
@@ -31,4 +31,7 @@ calibrate:      ## CP4.A judge calibration: Cohen's κ vs the gold set (needs OP
 	$(PY) -m redteam.calibrate gold/clinical_fabrication_gold.yaml --out calibration_out
 
 attack:         ## CP3.2 PyRIT multi-turn adversarial attacks (needs MODAL_OSS_URL + OPENROUTER_API_KEY)
-	$(PY) -m redteam.attack --out attack_out
+	$(PY) -m redteam.attack   # archives each run to attack_runs/<id>/ + LEDGER.md
+
+scorecard:      ## CP4 render the newest attack run into the pricing scorecard (no compute)
+	$(PY) -m redteam.scorecard attack_runs/latest

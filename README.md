@@ -7,10 +7,8 @@ example is a minimal **hospital front-desk receptionist** (pure LLM, three tools
 attacked on the two axes that matter for the use case — **PHI/PII disclosure** and
 **hallucination**.
 
-**Start here:** [`INTERVIEW_PRIMER.md`](INTERVIEW_PRIMER.md) — plain-English walkthrough (no jargon).
-[`REVIEW_GUIDE.md`](REVIEW_GUIDE.md) — what this is, what's done, and how to read every number.
-[`PLAN_VS_DELIVERED.md`](PLAN_VS_DELIVERED.md) — how the delivery maps to the original assignment
-plan. Attack-engine cost/latency notes: [`docs/ATTACK_RUNLOG.md`](docs/ATTACK_RUNLOG.md).
+Attack-engine cost/latency notes and the run-iteration history:
+[`docs/ATTACK_RUNLOG.md`](docs/ATTACK_RUNLOG.md).
 
 ## What the harness does
 
@@ -31,7 +29,7 @@ plan. Attack-engine cost/latency notes: [`docs/ATTACK_RUNLOG.md`](docs/ATTACK_RU
 In scope: **conversational social-engineering** and **tool-misuse / unsafe tool-chains**. Out of
 scope: **white-box** techniques (GCG/logit/harmony-channel — assume weight access an insurer lacks
 and don't transfer across families) and **indirect prompt injection via fetched data** (the caller
-can't reach staff-written notes in this agent). See `REVIEW_GUIDE.md` §2.
+can't reach staff-written notes in this agent).
 
 ## Locked design decisions
 
@@ -118,7 +116,7 @@ Qwen3, run again.)
 
 ## Status
 
-See `REVIEW_GUIDE.md` for the full current state. Snapshot:
+Snapshot of the current state:
 
 - **Substrate & deterministic scorer:** ✅ 50-patient fixture (5 canaries, stable hash), 3+1
   masked-by-default tools, agent loop, frozen transcript schema (1.1.0), tool-gate scorer.

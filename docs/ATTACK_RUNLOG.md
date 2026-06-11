@@ -48,6 +48,63 @@ future improvement.
 **~$1.0–1.3 per full run today (A100); ~$0.75–0.95 after the H100 switch.** GPU time
 dominates; the attacker/judge LLM calls are a rounding error by comparison.
 
+### Best-of-N (`--trials K`) cost
+
+A single-temperature pass under-counts risk: a guardrail that holds on a greedy
+(T=0) draw can still break on a stochastic one. `--trials K --target-temperature 1.0`
+runs each objective K independent times and reports **two** rates:
+
+- **objective-level ASR** — fraction of objectives broken _at least once_
+  (`stats.aggregate_probe_outcome` "any" = security worst-case),
+- **per-attempt ASR** — pooled breach rate with a **clustering correction**
+  (`stats.clustered_failure_rate`; the K trials of one objective share a
+  prompt/target state, so a design-effect widens the CI honestly), plus a
+  Best-of-N extrapolation (`attempts_to_90pct`: ~`ln(0.1)/ln(1-p̂)` calls to reach
+  90% cumulative breach — a 1-in-20 agent is near-certain to break inside ~45 calls).
+
+Cost scales ~linearly in K: a 6-objective K=12 run ≈ 72 conversations. On the H100
+(~3× A100) that's ~**$4–7 GPU + ~$1–2 OpenRouter**; budget the demo with `--limit`
+to the highest-yield objectives if needed. Each trial archives its own transcript
+under `attack_runs/<id>/transcripts/<objective>/trial_NN.json`.
+
+Recommended demo run (target must be up — see [[modal-target-manual-stop]]):
+
+    uv run python -m redteam.attack --trials 12 --target-temperature 1.0 --concurrency 6 --rpm 30
+
+### Concurrency — the real wall-clock lever (2026-06-11)
+
+Diagnosed from live H100 logs: per-request `execution` was **274–457 ms** (healthy,
+hundreds of tok/s while decoding) but the engine logged **5–11 tok/s** with
+`Running: 0 reqs` between hits — the GPU was **idle ~97%** of every window. The wall
+time wasn't the target; it was the _serial_ per-turn chain (target → OpenRouter
+adversary `Euryale-70B` → OpenRouter scorer), one attack at a time. The low "tok/s"
+was a duty-cycle artifact (tokens ÷ wall-window, not tokens ÷ decode-time).
+
+Fix: `run_suite_async` runs every (objective × trial) attack **concurrently** under
+an `asyncio.Semaphore(--concurrency)` (default 6, ≤ the target's `max_inputs=16`), so
+the H100 batches independent attacks and one attack's OpenRouter latency is hidden
+behind the others. Transient errors (429 / timeouts) get exponential-backoff retries.
+
+**The binding bottleneck is NOT the H100 — it's the OpenRouter adversary provider.**
+First concurrent run (`--concurrency 8`) flooded `sao10k/l3.3-euryale-70b`'s upstream
+provider (NextBit) with `429 ... temporarily rate-limited`, and a too-tight scorer
+token cap (512) truncated `SelfAskTrueFalseScorer`'s JSON `rationale` mid-string →
+`500 Invalid JSON`. Two fixes:
+
+1. **Rate throttle, not just retry** — both OpenRouter endpoints get PyRIT's
+   `max_requests_per_minute` (`--rpm`, default 30) so we _pace_ requests under the
+   provider's limit instead of bursting and eating Retry-After backoffs;
+   `provider.allow_fallbacks` lets OpenRouter reroute on a provider 429.
+2. **Scorer token cap restored to 1000** (the truncation 500s were self-inflicted);
+   adversary 1024 (short in-character turns).
+
+Net throughput is governed by `min(adversary, scorer)` req/min, **not** GPU speed —
+so "fully utilising the H100" is not achievable with a small-provider adversary like
+Euryale; concurrency hides latency but `--rpm` is the real throughput governor. To go
+genuinely faster, raise `--rpm` if the provider tolerates it, or switch the adversary
+to a model served by high-throughput providers (DeepInfra/Together-class) at some risk
+to the in-character quality Euryale was chosen for.
+
 ---
 
 ## 2. Latency optimization (2026-06-11)

@@ -8,7 +8,8 @@ attacked on the two axes that matter for the use case — **PHI/PII disclosure**
 **hallucination**.
 
 **Start here:** [`REVIEW_GUIDE.md`](REVIEW_GUIDE.md) — what this is, what's done, and how to read
-every number. Attack-engine cost/latency notes: [`docs/ATTACK_RUNLOG.md`](docs/ATTACK_RUNLOG.md).
+every number. [`PLAN_VS_DELIVERED.md`](PLAN_VS_DELIVERED.md) — how the delivery maps to the original
+assignment plan. Attack-engine cost/latency notes: [`docs/ATTACK_RUNLOG.md`](docs/ATTACK_RUNLOG.md).
 
 ## What the harness does
 

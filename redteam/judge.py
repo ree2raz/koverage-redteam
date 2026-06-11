@@ -48,10 +48,16 @@ from llmcore.types import Message, Role
 from .probe import Probe
 from .schema import JudgeVerdict, Transcript
 
-# Confirmed-present OpenRouter slugs (verified against /v1/models, 2026-06-10).
-# Two different model families on purpose. Override per-run with env vars.
+# Confirmed-present OpenRouter slugs. Two different model families on purpose.
+# Override per-run with env vars (JUDGE_A_MODEL / JUDGE_B_MODEL).
+# Judge B was deepseek-v4-pro, but it returned `204` empty responses often enough
+# that ~3/4 of a run's panel "escalations" were really its errors, not genuine
+# disagreement. Mistral-Small-24B is reliable, non-OpenAI (keeps the panel diverse
+# from gpt-5.4), and validated to flag fabrications / clear refusals. NOTE: the
+# CP4.A κ-calibration (κ=1.00) was measured on the gpt-5.4 + deepseek pair — it must
+# be re-run for this pair before the scoring gate (JUDGE_SCORING_ENABLED) is flipped.
 DEFAULT_JUDGE_A = "openai/gpt-5.4"
-DEFAULT_JUDGE_B = "deepseek/deepseek-v4-pro"
+DEFAULT_JUDGE_B = "mistralai/mistral-small-24b-instruct-2501"
 
 _VALID_VERDICTS = frozenset({"flag", "clear"})
 
@@ -103,21 +109,30 @@ class Judge:
             Message(role=Role.USER, content=payload),
         ]
         t0 = time.perf_counter()
-        try:
-            # 512: the JSON verdict is tiny, but gpt-5-class judges are reasoning
-            # models that spend tokens before the answer — too low a ceiling 400s
-            # or truncates to empty. temperature=0 for a reproducible verdict.
-            resp = self.backend.generate(messages, temperature=0.0, max_tokens=512)
-            verdict, rationale = _parse_verdict(resp.text)
-        except Exception as exc:  # noqa: BLE001 - a judge outage must not abort the run
-            return JudgeVerdict(
-                judge_model=self.model, judge_provider=self.provider,
-                verdict="error", rationale=f"judge call failed: {exc}",
-                latency_s=time.perf_counter() - t0,
-            )
+        # Retry transient empties/parse failures (a `204` empty response or a
+        # truncated reply) once before giving up — these are provider hiccups, not
+        # real indecision, and letting one escalate the whole item wastes a verdict.
+        last_err = "no attempt"
+        for attempt in range(2):
+            try:
+                # 512: the JSON verdict is tiny, but gpt-5-class judges are reasoning
+                # models that spend tokens before the answer — too low a ceiling 400s
+                # or truncates to empty. temperature=0 for a reproducible verdict.
+                resp = self.backend.generate(messages, temperature=0.0, max_tokens=512)
+                verdict, rationale = _parse_verdict(resp.text)
+            except Exception as exc:  # noqa: BLE001 - a judge outage must not abort the run
+                last_err = f"judge call failed: {exc}"
+                continue
+            if verdict in _VALID_VERDICTS:
+                return JudgeVerdict(
+                    judge_model=self.model, judge_provider=self.provider,
+                    verdict=verdict, rationale=rationale,
+                    latency_s=time.perf_counter() - t0,
+                )
+            last_err = rationale  # parse error text; retry once
         return JudgeVerdict(
             judge_model=self.model, judge_provider=self.provider,
-            verdict=verdict, rationale=rationale,
+            verdict="error", rationale=last_err,
             latency_s=time.perf_counter() - t0,
         )
 

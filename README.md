@@ -64,6 +64,7 @@ make check          # ruff + full offline test suite (no network)
 make deploy-target  # modal deploy deploy/modal_gpt_oss.py  (gpt-oss-20b, H100, vLLM)
 make smoke          # live smoke: lookup + verified booking, asserts tools fire
 make attack         # PyRIT multi-turn Best-of-N attack suite (the headline engine)
+make scorecard      # render the newest run into the CP4 pricing scorecard (no compute)
 make replay         # re-score saved transcripts with the current scorer, zero cost
 ```
 

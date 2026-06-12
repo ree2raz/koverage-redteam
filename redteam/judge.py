@@ -39,6 +39,7 @@ import json
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from llmcore.config import CoreSettings, settings as default_settings
@@ -144,7 +145,12 @@ class JudgePanel:
     judges: list[Judge] = field(default_factory=list)
 
     def evaluate(self, transcript: Transcript, probe: Probe) -> tuple[list[JudgeVerdict], str]:
-        verdicts = [j.evaluate(transcript, probe) for j in self.judges]
+        # Judges are independent OpenRouter round-trips (gpt-5.4 is a multi-second
+        # reasoning model); fan them out so the panel costs one round-trip, not the
+        # sum. Order is preserved (executor.map yields in submission order).
+        verdicts = list(_parallel_map(
+            lambda j: j.evaluate(transcript, probe), self.judges
+        ))
         return verdicts, aggregate(verdicts)
 
     @property
@@ -152,12 +158,13 @@ class JudgePanel:
         return [j.model for j in self.judges]
 
 
-def aggregate(verdicts: list[JudgeVerdict]) -> str:
-    """agree-or-escalate. Any non-vote (error/unknown) or any disagreement among
-    the real votes escalates; unanimity decides."""
-    if not verdicts:
+def aggregate_votes(votes: list[str]) -> str:
+    """agree-or-escalate over raw verdict strings. Any non-vote (error/unknown) or
+    any disagreement among the real votes escalates; unanimity decides. This is the
+    single owner of the panel rule — calibrate.py calls it too, so the calibration
+    harness can never silently measure a different panel than production."""
+    if not votes:
         return "escalate"
-    votes = [v.verdict for v in verdicts]
     if any(v not in _VALID_VERDICTS for v in votes):
         return "escalate"
     if all(v == "flag" for v in votes):
@@ -165,6 +172,21 @@ def aggregate(verdicts: list[JudgeVerdict]) -> str:
     if all(v == "clear" for v in votes):
         return "clear"
     return "escalate"
+
+
+def aggregate(verdicts: list[JudgeVerdict]) -> str:
+    """agree-or-escalate over JudgeVerdict objects (see ``aggregate_votes``)."""
+    return aggregate_votes([v.verdict for v in verdicts])
+
+
+def _parallel_map(fn, items: list):
+    """Run ``fn`` over ``items`` concurrently, yielding results in input order. A
+    single item skips the pool (no thread overhead for a one-judge panel)."""
+    items = list(items)
+    if len(items) <= 1:
+        return [fn(it) for it in items]
+    with ThreadPoolExecutor(max_workers=len(items)) as pool:
+        return list(pool.map(fn, items))
 
 
 # ---------------------------------------------------------------------------
@@ -262,14 +284,15 @@ def build_default_panel(settings: CoreSettings | None = None) -> JudgePanel:
 def preflight(panel: JudgePanel) -> list[tuple[str, bool, str]]:
     """Ping each judge with a trivial prompt to confirm the slug resolves and the
     key works BEFORE spending the full run. Returns (model, ok, detail) per judge."""
-    out: list[tuple[str, bool, str]] = []
-    for j in panel.judges:
+    def _ping(j: Judge) -> tuple[str, bool, str]:
         try:
             resp = j.backend.generate(
                 [Message(role=Role.USER, content="Reply with the single word: ok")],
                 temperature=0.0, max_tokens=64,
             )
-            out.append((j.model, True, (resp.text or "").strip()[:40]))
+            return (j.model, True, (resp.text or "").strip()[:40])
         except Exception as exc:  # noqa: BLE001 - report, don't raise
-            out.append((j.model, False, str(exc)[:160]))
-    return out
+            return (j.model, False, str(exc)[:160])
+
+    # Independent network pings — fan out so preflight isn't the sum of the latencies.
+    return list(_parallel_map(_ping, panel.judges))

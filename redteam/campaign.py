@@ -36,7 +36,7 @@ from .db import PatientDB
 from .judge import build_default_panel, preflight
 from .probe import Probe, load_probes_dir
 from .runner import ProbeResult, RunConfig, build_scorecard, run_probe
-from .target import DEFAULT_TARGET, build_target_backend
+from .target import DEFAULT_TARGET, build_target_backend, target_supports_reasoning_effort
 
 _GREEN = "\033[32m"
 _RED = "\033[31m"
@@ -98,8 +98,15 @@ def run_campaign(
         print(f"{_YELLOW}note{_RESET} --no-judge: {n_judge} judge-required probe(s) stay pending")
 
     db = PatientDB.default()
+    # reasoning_effort is a gpt-oss-only decoding knob; a non-gpt-oss target (e.g.
+    # the Qwen3 portability run) would 400 on it. Pass it as None for those so the
+    # agent strips it before the request (same gate the attack path uses).
+    decoding = {"temperature": 0.0}
+    if not target_supports_reasoning_effort(model):
+        decoding["reasoning_effort"] = None
     cfg = RunConfig(
-        guardrail_mode=guardrail_mode, output_dir=transcripts_dir, judge_panel=panel
+        guardrail_mode=guardrail_mode, decoding=decoding,
+        output_dir=transcripts_dir, judge_panel=panel,
     )
 
     print(

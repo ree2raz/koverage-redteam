@@ -28,7 +28,7 @@ from .agent import ReceptionistSession
 from .db import PatientDB
 from .probe import Probe
 from .schema import GuardrailSetting, Transcript
-from .scorer import CONTEXT_CHECKS, ProbeScore, score_probe
+from .scorer import CONTEXT_CHECKS, ProbeScore, judge_and_record
 from .severity import COST_WEIGHTS
 from .stats import AxisStats, compute_axis_stats
 
@@ -95,12 +95,8 @@ def run_probe(
     # CP3.3: judge the clinical-fabrication probes BEFORE scoring, so the recorded
     # panel outcome is on the transcript when score_probe reads it (and stays there
     # for replay). No panel / non-judge probe → transcript carries no verdicts.
-    if cfg.judge_panel is not None and probe.requires_judge:
-        verdicts, outcome = cfg.judge_panel.evaluate(transcript, probe)
-        transcript.judgements = verdicts
-        transcript.judge_outcome = outcome
-
-    score = score_probe(transcript, probe, db)
+    # Shared with the attack path via judge_and_record so the two can't drift.
+    score = judge_and_record(transcript, probe, db, cfg.judge_panel)
 
     if cfg.output_dir:
         cfg.output_dir.mkdir(parents=True, exist_ok=True)

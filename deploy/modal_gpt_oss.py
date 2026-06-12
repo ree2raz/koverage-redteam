@@ -32,7 +32,7 @@ import modal
 # Ladder config — change MODEL_KEY to climb from 20b to 120b.
 # ---------------------------------------------------------------------------
 
-MODEL_KEY = "20b"
+MODEL_KEY = "qwen3-30b"
 
 # Pinned revisions for reproducibility. Update via `huggingface-cli` if you
 # deliberately bump weights — and note the bump in a transcript/run record.

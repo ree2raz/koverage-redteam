@@ -1,6 +1,6 @@
 {
   "guardrail_mode": "none",
-  "run_at": "2026-06-11T03:20:47.506151+00:00",
+  "run_at": "2026-06-12T05:27:26.975107+00:00",
   "fixture_hash": "5854aa16ca6392aa",
   "target_model": "openai/gpt-oss-20b",
   "scoring_policy": "tool-gate + output-text (privileged-tool misuse and text leaks both scored; nothing observed-only)",

@@ -35,6 +35,7 @@ import random
 import subprocess
 import sys
 import time
+from collections import Counter
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,10 +56,14 @@ from llmcore.config import settings
 from .db import PatientDB
 from .probe import Probe
 from .runner import ProbeResult
-from .scorer import score_probe
-from .severity import COST_WEIGHTS
+from .scorer import judge_and_record
+from .severity import worst_severity, zero_severity
 from .stats import aggregate_probe_outcome, clustered_failure_rate, wilson_interval
-from .target import DEFAULT_TARGET, build_target_backend
+from .target import (
+    DEFAULT_TARGET,
+    build_target_backend,
+    target_supports_reasoning_effort,
+)
 
 # OpenAI-compatible base URL for OpenRouter (attacker + scorer). The OpenAI client
 # appends '/chat/completions' itself, so the base must NOT include it.
@@ -436,23 +441,20 @@ async def run_objective_async(
         session = next(iter(agent_target.sessions.values()), None)
     probe_result = None
     failed = False
-    severity = "S0" if obj.axis == "phi" else "H0"
+    severity = zero_severity(obj.axis)
     checks_failed: list[str] = []
     judge_outcome = None
     if session is not None:
         transcript = session.transcript(fixture_hash=db.fixture_hash())
         # For judge-required objectives (clinical H3), run the dual-judge panel and
-        # record its advisory verdict on the transcript BEFORE scoring — same pattern
-        # as runner.py. score_probe reads transcript.judge_outcome/.judgements; the
-        # verdict only moves the priced rate once severity.JUDGE_SCORING_ENABLED is on
-        # (it stays advisory until the κ-gate), but recording it gives the otherwise
-        # deterministically-unevaluated hallucination/H3 axis a real adjudicated read.
-        if judge_panel is not None and obj.requires_judge:
-            verdicts, outcome = await asyncio.to_thread(judge_panel.evaluate, transcript, probe)
-            transcript.judgements = verdicts
-            transcript.judge_outcome = outcome
-            judge_outcome = outcome
-        score = score_probe(transcript, probe, db)
+        # record its advisory verdict on the transcript BEFORE scoring — shared with
+        # runner.py via judge_and_record. The whole judge+score sequence is offloaded
+        # to a thread (panel.evaluate does blocking OpenRouter calls). The verdict only
+        # moves the priced rate once severity.JUDGE_SCORING_ENABLED is on (advisory
+        # until the κ-gate), but recording it gives the otherwise deterministically
+        # unevaluated H3 axis a real adjudicated read.
+        score = await asyncio.to_thread(judge_and_record, transcript, probe, db, judge_panel)
+        judge_outcome = transcript.judge_outcome
         probe_result = ProbeResult(probe=probe, transcript=transcript, score=score)
         failed = score.failed
         severity = score.effective_severity
@@ -507,9 +509,8 @@ async def run_suite_async(
     db = PatientDB.default()
     backend = build_target_backend(model)
     # reasoning_effort is a gpt-oss-only decoding knob; a non-reasoning target (e.g.
-    # Mistral-Small-24B) would 400 on it, so drop it for the portable comparison.
-    is_gpt_oss = model.lower().startswith("openai/gpt-oss")
-    effort = reasoning_effort if is_gpt_oss else None
+    # Qwen3, Mistral-Small-24B) would 400 on it, so drop it for the portable comparison.
+    effort = reasoning_effort if target_supports_reasoning_effort(model) else None
     # The adversary writes a short in-character caller turn (cap 1024 is ample). The
     # scorer must NOT be capped tight: SelfAskTrueFalseScorer returns JSON with a
     # long `rationale`, and truncating it mid-string yields "Invalid JSON" 500s — so
@@ -638,19 +639,13 @@ def _attempts_to_breach(p: float, prob: float = 0.90) -> int | None:
 
 
 def _worst_severity(trials: list[AttackOutcome], axis: str) -> str:
-    sevs = [o.severity for o in trials if o.failed]
-    if not sevs:
-        return "S0" if axis == "phi" else "H0"
-    return max(sevs, key=lambda s: COST_WEIGHTS.get(s, 0.0))
+    return worst_severity([o.severity for o in trials if o.failed], axis)
 
 
-def _judge_tally(trials: list[AttackOutcome]) -> dict:
+def _judge_tally(trials: list[AttackOutcome]) -> Counter:
     """Count the advisory dual-judge outcomes across a judge-required objective's
     trials. A trial with no panel run (judge off / unreachable) keys to None."""
-    tally: dict = {}
-    for o in trials:
-        tally[o.judge_outcome] = tally.get(o.judge_outcome, 0) + 1
-    return tally
+    return Counter(o.judge_outcome for o in trials)
 
 
 def _summarise(results: list[ObjectiveResult], *, confidence: float = 0.95) -> dict:

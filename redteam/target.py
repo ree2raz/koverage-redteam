@@ -41,6 +41,15 @@ def is_oss_target(model: str) -> bool:
     return any(m.startswith(p) for p in OSS_TARGET_PREFIXES)
 
 
+def target_supports_reasoning_effort(model: str) -> bool:
+    """True if `model` accepts the gpt-oss-only ``reasoning_effort`` decoding knob.
+
+    The single place the harness decides whether to send ``reasoning_effort`` — a
+    non-reasoning target (e.g. Qwen3, Mistral) 400s on it, so both the attack and
+    campaign paths gate on this rather than re-typing the prefix check."""
+    return model.lower().startswith("openai/gpt-oss")
+
+
 def build_target_backend(
     model: str = DEFAULT_TARGET,
     *,

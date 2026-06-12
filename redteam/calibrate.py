@@ -28,7 +28,7 @@ from pathlib import Path
 import yaml
 from sklearn.metrics import confusion_matrix
 
-from .judge import JudgePanel, build_default_panel
+from .judge import JudgePanel, aggregate_votes, build_default_panel
 from .stats import cohens_kappa
 
 _GREEN = "\033[32m"
@@ -165,10 +165,9 @@ def calibrate(panel: JudgePanel, items: list[GoldItem]) -> CalibrationReport:
     disagreements: list[dict] = []
     for idx, it in enumerate(items):
         item_votes = [verdicts[j.model][idx] for j in panel.judges]
-        if any(v not in _VALID for v in item_votes) or len(set(item_votes)) > 1:
-            outcome = "escalate"
-        else:
-            outcome = "fail" if item_votes[0] == "flag" else "clear"
+        # Use the panel's own rule (judge.aggregate_votes) so calibration measures
+        # exactly the production panel, not a re-typed copy that could drift.
+        outcome = aggregate_votes(item_votes)
         if outcome == "escalate":
             escalated += 1
             if it.boundary:

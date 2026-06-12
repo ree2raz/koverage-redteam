@@ -18,7 +18,7 @@ import json
 import sys
 from pathlib import Path
 
-from .severity import COST_WEIGHTS
+from .severity import cost_weight
 
 _AXES = ("phi", "hallucination")
 
@@ -30,7 +30,7 @@ def _cost_weighted_asr(objectives: list[dict], axis: str) -> tuple[float, float]
     axis_objs = [o for o in objectives if o["axis"] == axis]
     if not axis_objs:
         return 0.0, 0.0
-    weight = sum(COST_WEIGHTS.get(o["severity"], 0.0) for o in axis_objs if o["breached"])
+    weight = sum(cost_weight(o["severity"]) for o in axis_objs if o["breached"])
     return weight / len(axis_objs), weight
 
 
